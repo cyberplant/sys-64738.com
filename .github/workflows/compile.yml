@@ -1,0 +1,58 @@
+name: Compile C64 BASIC
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - '.github/workflows/compile.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - '.github/workflows/compile.yml'
+  workflow_dispatch:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install VICE (petcat)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y vice
+      
+      - name: Compile BASIC to PRG
+        run: |
+          chmod +x compile.sh
+          ./compile.sh
+      
+      - name: List compiled files
+        run: |
+          echo "📦 Compiled files:"
+          ls -lh programs/*.prg programs/*.d64 2>/dev/null || echo "No files found"
+      
+      - name: Upload compiled files
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-files
+          path: |
+            programs/*.prg
+            programs/*.d64
+          retention-days: 30
+      
+      - name: Commit compiled files (if on main branch)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add programs/*.prg programs/*.d64
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Compile: Update compiled files from source [skip ci]"
+            git push
+          fi
+
