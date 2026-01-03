@@ -1,0 +1,99 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    height: 100%;
+    overflow: hidden;
+}
+
+body {
+    font-family: 'Courier New', monospace;
+    background: #000;
+    color: #00ff00;
+    display: flex;
+    flex-direction: column;
+}
+
+#emulator-container {
+    flex: 1;
+    width: 100%;
+    height: calc(100vh - 60px);
+    background: #000;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+/* JSC64 creates multiple canvas elements (Back, Border, Fore) */
+/* Canvas scaling is handled by JavaScript in app.js */
+#emulator-container canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: -webkit-crisp-edges;
+}
+
+.controls-bar {
+    height: 60px;
+    background: rgba(0, 0, 0, 0.9);
+    border-top: 2px solid #00ff00;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding: 0 20px;
+    flex-shrink: 0;
+}
+
+.btn {
+    background: #00ff00;
+    color: #000;
+    border: none;
+    padding: 10px 20px;
+    font-size: 14px;
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.3s ease;
+    text-transform: uppercase;
+}
+
+.btn:hover {
+    background: #00cc00;
+    box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+}
+
+.btn:active {
+    transform: scale(0.98);
+}
+
+.program-info {
+    color: #00cc00;
+    font-size: 14px;
+    text-align: center;
+    min-height: 20px;
+    flex: 1;
+    max-width: 400px;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .controls-bar {
+        flex-wrap: wrap;
+        height: auto;
+        min-height: 60px;
+        padding: 10px;
+    }
+    
+    .program-info {
+        width: 100%;
+        order: 3;
+    }
+}
+

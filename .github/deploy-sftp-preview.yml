@@ -1,0 +1,133 @@
+name: Deploy preview via SFTP (branch)
+
+on:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run smoke test only (skip lftp install + deploy)"
+        type: boolean
+        required: false
+        default: true
+
+concurrency:
+  group: deploy-sftp-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SFTP_HOST: ${{ vars.SFTP_HOST }}
+      SFTP_PORT: ${{ vars.SFTP_PORT }}
+      SFTP_USER: ${{ vars.SFTP_USER }}
+      SFTP_DESTINATION: ${{ vars.SFTP_DESTINATION }}
+      SFTP_PRIVATE_KEY: ${{ secrets.SFTP_PRIVATE_KEY }}
+      SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+      SFTP_KNOWN_HOSTS: ${{ secrets.SFTP_KNOWN_HOSTS }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dry run smoke test (no deploy)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'rm -f /tmp/deploy.lftp' EXIT
+
+          cat > /tmp/deploy.lftp <<EOF
+          set net:timeout 1;
+          bye
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("/tmp/deploy.lftp")
+          data = p.read_text(encoding="utf-8")
+          assert "set net:timeout 1;" in data
+          assert data.strip().endswith("bye")
+          print("dry_run smoke test OK")
+          PY
+
+      - name: Install lftp
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        run: sudo apt-get update && sudo apt-get install -y lftp openssh-client
+
+      - name: Prepare SSH config (known_hosts + optional key)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+
+          if [[ -n "${SFTP_KNOWN_HOSTS:-}" ]]; then
+            printf '%s\n' "$SFTP_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          else
+            echo "SFTP_KNOWN_HOSTS is not set; generating known_hosts via ssh-keyscan."
+            ssh-keyscan -p "${SFTP_PORT:-22}" "$SFTP_HOST" > "$HOME/.ssh/known_hosts"
+          fi
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          if [[ -n "${SFTP_PRIVATE_KEY:-}" ]]; then
+            printf '%s\n' "$SFTP_PRIVATE_KEY" > "$HOME/.ssh/id_rsa"
+            chmod 600 "$HOME/.ssh/id_rsa"
+          fi
+
+      - name: Deploy preview (SFTP mirror to /_{branch}/)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'rm -f /tmp/deploy.lftp' EXIT
+
+          if [[ -z "${SFTP_HOST:-}" || -z "${SFTP_USER:-}" || -z "${SFTP_DESTINATION:-}" ]]; then
+            echo "Missing required variables. Ensure vars.SFTP_HOST, vars.SFTP_USER, and vars.SFTP_DESTINATION are set."
+            exit 1
+          fi
+
+          SFTP_PORT="${SFTP_PORT:-22}"
+
+          # Turn a ref name like "feature/x-y" into a safe folder name "feature-x-y"
+          RAW_BRANCH="${GITHUB_REF_NAME}"
+          SAFE_BRANCH="$(printf '%s' "$RAW_BRANCH" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
+          PREVIEW_DESTINATION="${SFTP_DESTINATION}/_${SAFE_BRANCH}"
+
+          # Prefer key-based auth if provided; otherwise fall back to password.
+          if [[ -n "${SFTP_PRIVATE_KEY:-}" ]]; then
+            CONNECT_PROGRAM="ssh -a -x -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -p ${SFTP_PORT}"
+            cat > /tmp/deploy.lftp <<EOF
+          set net:timeout 20;
+          set net:max-retries 2;
+          set sftp:auto-confirm yes;
+          set sftp:connect-program "${CONNECT_PROGRAM}";
+          open -u "${SFTP_USER}" "sftp://${SFTP_HOST}";
+          mkdir -p "${PREVIEW_DESTINATION}";
+          mirror -R --delete --verbose --exclude-glob .git/ --exclude-glob .github/ ./ "${PREVIEW_DESTINATION}";
+          bye
+          EOF
+            lftp -f /tmp/deploy.lftp
+          else
+            if [[ -z "${SFTP_PASSWORD:-}" ]]; then
+              echo "Neither secrets.SFTP_PRIVATE_KEY nor secrets.SFTP_PASSWORD is set."
+              exit 1
+            fi
+
+            CONNECT_PROGRAM="ssh -a -x -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -p ${SFTP_PORT}"
+            cat > /tmp/deploy.lftp <<EOF
+          set net:timeout 20;
+          set net:max-retries 2;
+          set sftp:auto-confirm yes;
+          set sftp:connect-program "${CONNECT_PROGRAM}";
+          open -u "${SFTP_USER},${SFTP_PASSWORD}" "sftp://${SFTP_HOST}";
+          mkdir -p "${PREVIEW_DESTINATION}";
+          mirror -R --delete --verbose --exclude-glob .git/ --exclude-glob .github/ ./ "${PREVIEW_DESTINATION}";
+          bye
+          EOF
+            lftp -f /tmp/deploy.lftp
+          fi
+
