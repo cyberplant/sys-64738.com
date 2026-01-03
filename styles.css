@@ -20,13 +20,18 @@ body {
 #emulator-container {
     flex: 1;
     width: 100%;
-    height: calc(100vh - 60px);
+    height: 100vh;
     background: #000;
     position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
     overflow: hidden;
+}
+
+/* Debug page has controls bar, so needs different height */
+body.debug-page #emulator-container {
+    height: calc(100vh - 60px);
 }
 
 /* JSC64 creates multiple canvas elements (Back, Border, Fore) */
