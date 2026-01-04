@@ -117,11 +117,22 @@ The program you create will be what users see and interact with when they visit 
 
 ## Emulator
 
-Currently using **JSC64** for C64 emulation. JSC64 is a jQuery-based emulator that's simple to use and works well in browsers.
+Default emulator is **VICE.js** (an Emscripten build of VICE) with a **JSC64** fallback path kept in place.
+
+- **VICE.js (default)**: ships locally at `lib/vice/x64.js` and is booted by `app.js`.
+- **JSC64 (fallback)**: loaded dynamically by `app.js` when selected.
 
 - **GitHub**: https://github.com/reggino/jsc64
 - **Demo**: https://reggino.github.io/jsc64/
 - **API**: Uses `jsc64.loadPrg(url)` method to load programs
+
+### Switching backends
+
+- **Use VICE.js** (default): open the site normally.
+- **Force JSC64**: open with `?emu=jsc64` (example: `debug.html?emu=jsc64`).
+- **Force VICE.js**: open with `?emu=vice`.
+
+The selection is remembered in `localStorage` (`sys64738.emu`).
 
 ### Alternative Emulators
 
