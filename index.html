@@ -9,15 +9,9 @@
 <body>
     <div id="emulator-container"></div>
     
-    <!-- Set JSC64 base path before loading -->
-    <script>
-        var JSC64_BASEPATH = 'lib/';
-    </script>
-    <!-- jQuery (required for JSC64) -->
+    <!-- jQuery (used by debug UI + legacy fallback path) -->
     <script src="lib/jquery.min.js"></script>
-    <!-- JSC64 Emulator -->
-    <script src="lib/jquery.jsc64classes.js"></script>
-    <script src="lib/jquery.jsc64.js"></script>
+    <!-- Emulator boot / integration (VICE.js default; JSC64 loads dynamically if selected) -->
     <script src="app.js"></script>
 </body>
 </html>

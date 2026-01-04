@@ -1,40 +1,93 @@
-// C64 Emulator Integration using JSC64
-let emulator = null;
+// C64 Emulator Integration (VICE.js default, JSC64 fallback)
+let emulator = null; // JSC64 uses this as the jQuery container
 
-// Initialize the emulator when the page loads
+const EmulatorBackend = {
+    VICE: 'vice',
+    JSC64: 'jsc64'
+};
+
+let activeBackend = null;
+
+const viceState = {
+    scriptEl: null,
+    running: false,
+    canvas: null
+};
+
+// Initialize when the page loads (jQuery is used by the debug UI + legacy JSC64 path)
 $(document).ready(function() {
+    activeBackend = detectBackendPreference();
     initializeEmulator();
     setupFileInput();
 });
+
+function detectBackendPreference() {
+    // Priority: query string (?emu=vice|jsc64) -> localStorage -> default (VICE)
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const fromQuery = (params.get('emu') || '').toLowerCase();
+        if (fromQuery === EmulatorBackend.VICE || fromQuery === EmulatorBackend.JSC64) {
+            localStorage.setItem('sys64738.emu', fromQuery);
+            return fromQuery;
+        }
+        const fromStorage = (localStorage.getItem('sys64738.emu') || '').toLowerCase();
+        if (fromStorage === EmulatorBackend.VICE || fromStorage === EmulatorBackend.JSC64) {
+            return fromStorage;
+        }
+    } catch (_) {
+        // ignore
+    }
+    return EmulatorBackend.VICE;
+}
 
 function initializeEmulator() {
     const container = $('#emulator-container');
 
     try {
-        // Check if jQuery and JSC64 are loaded
-        if (typeof $ === 'undefined' || typeof $.fn.jsc64 === 'undefined') {
-            // Wait a bit for scripts to load
-            setTimeout(() => {
-                if (typeof $ !== 'undefined' && typeof $.fn.jsc64 !== 'undefined') {
-                    // Wait a bit more to ensure all dependency scripts are loaded
-                    setTimeout(() => {
-                        initJSC64();
-                    }, 100);
-                } else {
-                    console.error('JSC64 not loaded. Check the script files.');
-                    showError('Emulator library failed to load. Please refresh the page.');
-                }
-            }, 500);
-        } else {
-            // Wait a bit to ensure all dependency scripts are loaded
-            setTimeout(() => {
-                initJSC64();
-            }, 100);
+        if (activeBackend === EmulatorBackend.VICE) {
+            initVICEAuto();
+            return;
         }
+
+        // Legacy / fallback: JSC64
+        ensureJSC64Loaded()
+            .then(() => {
+                setTimeout(() => initJSC64(), 100);
+            })
+            .catch((error) => {
+                console.error('Failed to load JSC64:', error);
+                showError('Emulator library failed to load. Please refresh the page.');
+            });
     } catch (error) {
         console.error('Error initializing emulator:', error);
         showError('Failed to initialize emulator. Check console for details.');
     }
+}
+
+function loadScript(src) {
+    return new Promise((resolve, reject) => {
+        const el = document.createElement('script');
+        el.src = src;
+        el.async = true;
+        el.onload = () => resolve();
+        el.onerror = (e) => reject(e);
+        document.head.appendChild(el);
+    });
+}
+
+function ensureJSC64Loaded() {
+    if (typeof window.$ === 'undefined') {
+        return Promise.reject(new Error('jQuery is not loaded'));
+    }
+    if (typeof $.fn.jsc64 !== 'undefined') {
+        return Promise.resolve();
+    }
+
+    // JSC64 expects this global to resolve ROM/assets paths.
+    window.JSC64_BASEPATH = 'lib/';
+
+    // Load in order.
+    return loadScript('lib/jquery.jsc64classes.js').then(() => loadScript('lib/jquery.jsc64.js'));
 }
 
 function initJSC64() {
@@ -66,6 +119,210 @@ function initJSC64() {
         programInfo.text('Emulator ready. Click "Load Program" to start.');
         programInfo.css('color', '#00cc00');
     }
+}
+
+function setProgramInfo(message, color = '#00cc00') {
+    const programInfo = $('#program-info');
+    if (programInfo.length > 0) {
+        programInfo.text(message);
+        programInfo.css('color', color);
+    }
+}
+
+function audioDetected() {
+    // From vice.js README examples
+    return (typeof Audio === 'function' && typeof new Audio().mozSetup === 'function') ||
+        (typeof AudioContext === 'function') ||
+        (typeof webkitAudioContext === 'function');
+}
+
+function initVICEAuto() {
+    // Create a canvas and boot VICE.js, auto-starting programs/main.prg if present.
+    console.log('C64 Emulator initializing (VICE.js)');
+
+    // Scale on resize (VICE uses a single canvas)
+    $(window).off('resize', scaleCanvas).on('resize', scaleCanvas);
+
+    setProgramInfo('Starting emulator (VICE.js)...', '#00cc00');
+
+    // Default behavior mirrors the existing JSC64 auto-load behavior.
+    startVICE({
+        programName: 'main.prg',
+        programUrl: 'programs/main.prg'
+    });
+}
+
+function teardownVICE() {
+    viceState.running = false;
+    viceState.canvas = null;
+
+    // Try to stop the runtime if it exposes a quit hook (not guaranteed).
+    try {
+        if (window.Module && typeof window.Module.quit === 'function') {
+            window.Module.quit(0, new Error('VICE reboot'));
+        }
+    } catch (_) {
+        // ignore
+    }
+
+    // Remove injected script so we can re-inject on reboot.
+    if (viceState.scriptEl && viceState.scriptEl.parentNode) {
+        viceState.scriptEl.parentNode.removeChild(viceState.scriptEl);
+    }
+    viceState.scriptEl = null;
+
+    // Clear container and any lingering global Module reference.
+    try {
+        delete window.Module;
+    } catch (_) {
+        window.Module = undefined;
+    }
+
+    const container = document.getElementById('emulator-container');
+    if (container) {
+        container.innerHTML = '';
+    }
+}
+
+function ensureVICECanvas() {
+    const container = document.getElementById('emulator-container');
+    if (!container) {
+        throw new Error('Missing #emulator-container');
+    }
+
+    // Recreate content; VICE requires a canvas without border/padding.
+    container.innerHTML = '';
+
+    const canvas = document.createElement('canvas');
+    canvas.id = 'vice-canvas';
+    canvas.style.border = '0px none';
+    canvas.style.padding = '0';
+    canvas.style.margin = '0';
+    container.appendChild(canvas);
+
+    viceState.canvas = canvas;
+    return canvas;
+}
+
+function loadViceRuntime() {
+    return new Promise((resolve, reject) => {
+        const el = document.createElement('script');
+        el.src = 'lib/vice/x64.js';
+        el.async = true;
+        el.onload = () => resolve();
+        el.onerror = (e) => reject(e);
+        document.head.appendChild(el);
+        viceState.scriptEl = el;
+    });
+}
+
+function buildViceArguments(programName) {
+    const audioArgs = audioDetected()
+        ? ['-soundsync', '0', '-soundrate', '22050', '-soundfragsize', '2']
+        : ['-sound'];
+
+    // VICE autostart works for PRG/D64 etc.
+    return ['-autostart', programName].concat(audioArgs);
+}
+
+function startVICE({ programName, programUrl, programBytes }) {
+    teardownVICE();
+
+    const canvas = ensureVICECanvas();
+    const viceArgs = buildViceArguments(programName);
+
+    function loadFiles() {
+        if (typeof FS === 'undefined' || !FS.createDataFile) {
+            throw new Error('VICE FS is not available');
+        }
+
+        if (programBytes) {
+            FS.createDataFile('/', programName, new Uint8Array(programBytes), true, true);
+            return;
+        }
+
+        if (programUrl) {
+            // Block program start until we fetch the file.
+            const depId = `fetch:${programUrl}`;
+            addRunDependency(depId);
+            fetch(programUrl)
+                .then((response) => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch ${programUrl} (${response.status})`);
+                    }
+                    return response.arrayBuffer();
+                })
+                .then((buf) => {
+                    FS.createDataFile('/', programName, new Uint8Array(buf), true, true);
+                })
+                .catch((err) => {
+                    console.warn('VICE autoload failed:', err);
+                    setProgramInfo('Auto-load failed (program not found). Use debug.html to load a file, or run ./compile.sh to generate programs/main.prg.', '#ffaa00');
+                })
+                .finally(() => {
+                    removeRunDependency(depId);
+                });
+        }
+    }
+
+    // Global Module is consumed by VICE.js (Emscripten output).
+    window.Module = {
+        preRun: [loadFiles],
+        arguments: viceArgs,
+        canvas,
+        print: function(text) {
+            // Keep noisy output out of the UI but available for debugging.
+            if (text) console.log(text);
+        },
+        printErr: function(text) {
+            if (text) console.warn(text);
+        },
+        onRuntimeInitialized: function() {
+            viceState.running = true;
+            console.log('C64 Emulator initialized (VICE.js)');
+            setProgramInfo('Emulator ready (VICE.js).', '#00cc00');
+            installViceAudioUnlock();
+            // Apply scaling once the canvas exists.
+            setTimeout(scaleCanvas, 50);
+        }
+    };
+
+    loadViceRuntime().catch((e) => {
+        console.error('Failed to load VICE.js runtime, falling back to JSC64:', e);
+        setProgramInfo('VICE.js failed to load; falling back to JSC64...', '#ffaa00');
+        activeBackend = EmulatorBackend.JSC64;
+        initializeEmulator();
+    });
+}
+
+function resumeViceAudio() {
+    // VICE.js (Emscripten SDL) stores the WebAudio context at SDL.audioContext.
+    const ctx = (typeof window.SDL !== 'undefined' && window.SDL && window.SDL.audioContext)
+        ? window.SDL.audioContext
+        : null;
+
+    if (!ctx || typeof ctx.resume !== 'function') {
+        return;
+    }
+
+    // If the browser blocked audio on page load, the context is usually "suspended".
+    if (ctx.state === 'suspended') {
+        ctx.resume().catch((e) => {
+            // Still blocked or failed; nothing else we can do without further user gestures.
+            console.warn('Could not resume AudioContext:', e);
+        });
+    }
+}
+
+function installViceAudioUnlock() {
+    // Browsers require a user gesture before AudioContext can start.
+    // We can't bypass that, but we *can* automatically resume on the first interaction.
+    const handler = () => resumeViceAudio();
+
+    // Capture phase to run ASAP on the gesture.
+    document.addEventListener('pointerdown', handler, { capture: true, passive: true });
+    document.addEventListener('touchstart', handler, { capture: true, passive: true });
+    document.addEventListener('keydown', handler, { capture: true, passive: true });
 }
 
 function autoLoadProgram() {
@@ -167,9 +424,11 @@ function scaleCanvas() {
         return;
     }
 
-    // C64 native resolution: 403x284
-    const c64Width = 403;
-    const c64Height = 284;
+    // Use the canvas' intrinsic size when available (VICE.js uses a single canvas;
+    // JSC64 uses multiple canvases). Fall back to typical C64 framing.
+    const firstCanvas = canvases.get(0);
+    const c64Width = (firstCanvas && firstCanvas.width) ? firstCanvas.width : 403;
+    const c64Height = (firstCanvas && firstCanvas.height) ? firstCanvas.height : 284;
     const c64Aspect = c64Width / c64Height;
 
     // Container dimensions
@@ -231,6 +490,39 @@ function setupFileInput() {
 }
 
 function loadProgram(file) {
+    if (activeBackend === EmulatorBackend.VICE) {
+        return loadProgramVICE(file);
+    }
+    return loadProgramJSC64(file);
+}
+
+function loadProgramVICE(file) {
+    const reader = new FileReader();
+
+    setProgramInfo(`Loading ${file.name} (VICE.js)...`, '#00cc00');
+
+    reader.onload = function(e) {
+        const arrayBuffer = e.target.result;
+        try {
+            // Reboot emulator with the new program in its virtual FS.
+            startVICE({
+                programName: file.name,
+                programBytes: arrayBuffer
+            });
+        } catch (error) {
+            console.error('Error loading program (VICE.js):', error);
+            setProgramInfo(`Error loading ${file.name}: ${error.message}`, '#ff0000');
+        }
+    };
+
+    reader.onerror = function() {
+        setProgramInfo('Error reading file', '#ff0000');
+    };
+
+    reader.readAsArrayBuffer(file);
+}
+
+function loadProgramJSC64(file) {
     const programInfo = $('#program-info');
     const reader = new FileReader();
 
@@ -525,6 +817,21 @@ function fixBASICPointers() {
 
 // Alternative: Load program from URL
 function loadProgramFromUrl(url, name) {
+    if (activeBackend === EmulatorBackend.VICE) {
+        const programName = name || (String(url).split('/').pop() || 'program.prg');
+        setProgramInfo(`Loading ${programName} (VICE.js)...`, '#00cc00');
+        try {
+            startVICE({
+                programName,
+                programUrl: url
+            });
+        } catch (error) {
+            console.error('Error loading program from URL (VICE.js):', error);
+            setProgramInfo(`Error loading ${programName}: ${error.message}`, '#ff0000');
+        }
+        return;
+    }
+
     if (!emulator || typeof emulator.loadPrg !== 'function') {
         console.error('Emulator not initialized or loadPrg not available');
         const programInfo = $('#program-info');
