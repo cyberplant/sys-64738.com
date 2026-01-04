@@ -401,6 +401,17 @@
         const runBtn = document.getElementById('run-btn');
         if (!editor || !highlight || !runBtn) return;
 
+        // When the editor is focused, keep the emulator from receiving keystrokes.
+        // This is important for VICE.js (document-level handlers) and is a safety net in general.
+        function swallowIfEditing(e) {
+            if (document.activeElement === editor) {
+                e.stopImmediatePropagation();
+            }
+        }
+        document.addEventListener('keydown', swallowIfEditing, true);
+        document.addEventListener('keypress', swallowIfEditing, true);
+        document.addEventListener('keyup', swallowIfEditing, true);
+
         function sync() {
             highlight.innerHTML = renderHighlight(editor.value);
             // Keep scroll positions aligned.

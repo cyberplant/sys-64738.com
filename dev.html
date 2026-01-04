@@ -34,7 +34,11 @@
 
     <script>
         // dev.html should boot without auto-loading programs/main.prg
-        window.SYS64738_CONFIG = { autoLoadMain: false };
+        window.SYS64738_CONFIG = {
+            autoLoadMain: false,
+            // Prevent JSC64 from capturing keystrokes globally while editing.
+            jsc64KeyboardListenerSelector: '#emulator-container'
+        };
     </script>
     <script src="lib/jquery.min.js"></script>
     <script src="app.js"></script>

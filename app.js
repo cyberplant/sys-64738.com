@@ -11,6 +11,22 @@ function shouldAutoLoadMain() {
     }
 }
 
+function getJSC64KeyboardEventListener() {
+    // JSC64 accepts a jQuery object to attach keyboard listeners to.
+    // Default behavior keeps legacy pages working (document-level).
+    try {
+        const cfg = window.SYS64738_CONFIG || {};
+        const sel = cfg && cfg.jsc64KeyboardListenerSelector;
+        if (sel) {
+            const el = $(sel);
+            if (el && el.length > 0) return el;
+        }
+    } catch (_) {
+        // ignore
+    }
+    return $(document);
+}
+
 const EmulatorBackend = {
     VICE: 'vice',
     JSC64: 'jsc64'
@@ -104,10 +120,9 @@ function initJSC64() {
     const container = $('#emulator-container');
 
     // Initialize JSC64
-    // The jsc64() function takes an optional keyboardEventListener parameter
-    // If not provided, it defaults to $(document)
-    // We'll pass $(document) explicitly to ensure it's a jQuery object
-    container.jsc64($(document));
+    // The jsc64() function takes an optional keyboardEventListener parameter.
+    // Default is document-level; some pages (dev.html) scope it to the emulator container.
+    container.jsc64(getJSC64KeyboardEventListener());
 
     // Get the JSC64 instance from the container's data
     emulator = container;
