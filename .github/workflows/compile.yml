@@ -59,9 +59,9 @@ jobs:
             programs/*.d64
           retention-days: 30
 
-      - name: Install lftp
+      - name: Install rsync (and lftp fallback)
         if: ${{ github.event_name != 'pull_request' && env.SFTP_HOST != '' && env.SFTP_USER != '' && env.SFTP_DESTINATION != '' }}
-        run: sudo apt-get update && sudo apt-get install -y lftp openssh-client
+        run: sudo apt-get update && sudo apt-get install -y rsync lftp openssh-client
 
       - name: Prepare SSH config (known_hosts + optional key)
         if: ${{ github.event_name != 'pull_request' && env.SFTP_HOST != '' && env.SFTP_USER != '' && env.SFTP_DESTINATION != '' }}
@@ -138,20 +138,27 @@ jobs:
 
           echo "Deploy destination: ${DEPLOY_DESTINATION}"
 
-          # Prefer key-based auth if provided; otherwise fall back to password.
+          # Prefer key-based auth if provided; otherwise fall back to password (lftp).
           if [[ -n "${SFTP_PRIVATE_KEY:-}" ]]; then
-            CONNECT_PROGRAM="ssh -a -x -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -p ${SFTP_PORT}"
-            cat > /tmp/deploy.lftp <<EOF
-          set net:timeout 20;
-          set net:max-retries 2;
-          set sftp:auto-confirm yes;
-          set sftp:connect-program "${CONNECT_PROGRAM}";
-          open -u "${SFTP_USER}" "sftp://${SFTP_HOST}";
-          mkdir -p "${DEPLOY_DESTINATION}";
-          mirror -R --delete --verbose --exclude-glob .git/ --exclude-glob .github/ ./ "${DEPLOY_DESTINATION}";
-          bye
-          EOF
-            lftp -f /tmp/deploy.lftp
+            SSH_BASE=(
+              ssh
+              -a -x
+              -o BatchMode=yes
+              -o StrictHostKeyChecking=yes
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts"
+              -i "$HOME/.ssh/id_rsa"
+              -p "${SFTP_PORT}"
+            )
+
+            # Ensure destination exists
+            "${SSH_BASE[@]}" "${SFTP_USER}@${SFTP_HOST}" "mkdir -p \"${DEPLOY_DESTINATION}\""
+
+            # Sync repo contents to destination over SSH
+            rsync -az --delete --verbose \
+              --exclude ".git/" \
+              --exclude ".github/" \
+              -e "${SSH_BASE[*]}" \
+              ./ "${SFTP_USER}@${SFTP_HOST}:${DEPLOY_DESTINATION%/}/"
           else
             if [[ -z "${SFTP_PASSWORD:-}" ]]; then
               echo "Neither secrets.SFTP_PRIVATE_KEY nor secrets.SFTP_PASSWORD is set."
