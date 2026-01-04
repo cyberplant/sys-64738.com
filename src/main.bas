@@ -12,7 +12,7 @@
 65 poke 54276,32:rem gate off
 70 for d=1 to 30:next d
 75 for x=1 to 20
-80 print "welcome to sys-64738.com"
+80 print "dj carlos hermida se la come"
 85 for y=1 to 200
 90 next y
 95 poke 53280, x
@@ -34,6 +34,6 @@
 145 next fl
 150 next fh
 155 poke 54276,32:rem gate off
-160 print "see you later"
+160 print "puto"
 165 for d=1 to 100:next d
 1000 sys 64738
