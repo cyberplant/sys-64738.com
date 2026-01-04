@@ -42,17 +42,4 @@ jobs:
             programs/*.prg
             programs/*.d64
           retention-days: 30
-      
-      - name: Commit compiled files (if on main branch)
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add programs/*.prg programs/*.d64
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Compile: Update compiled files from source [skip ci]"
-            git push
-          fi
 

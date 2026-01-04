@@ -1,22 +1,26 @@
-name: Deploy preview via SFTP (branch)
+name: Deploy via SFTP
 
 on:
-  push:
-    branches-ignore: [main]
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Run smoke test only (skip lftp install + deploy)"
-        type: boolean
-        required: false
-        default: true
+  workflow_run:
+    workflows: ["Compile C64 BASIC"]
+    types: [completed]
+    branches: [main]
 
 concurrency:
-  group: deploy-sftp-preview-${{ github.ref }}
+  group: deploy-sftp-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   deploy:
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success'
+        && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+      }}
     runs-on: ubuntu-latest
     env:
       SFTP_HOST: ${{ vars.SFTP_HOST }}
@@ -28,36 +32,22 @@ jobs:
       SFTP_KNOWN_HOSTS: ${{ secrets.SFTP_KNOWN_HOSTS }}
 
     steps:
-      - name: Checkout
+      - name: Checkout (exact commit that was compiled)
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Dry run smoke test (no deploy)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          trap 'rm -f /tmp/deploy.lftp' EXIT
-
-          cat > /tmp/deploy.lftp <<EOF
-          set net:timeout 1;
-          bye
-          EOF
-
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("/tmp/deploy.lftp")
-          data = p.read_text(encoding="utf-8")
-          assert "set net:timeout 1;" in data
-          assert data.strip().endswith("bye")
-          print("dry_run smoke test OK")
-          PY
+      - name: Download compiled files artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: compiled-files
+          run-id: ${{ github.event.workflow_run.id }}
+          path: .
 
       - name: Install lftp
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         run: sudo apt-get update && sudo apt-get install -y lftp openssh-client
 
       - name: Prepare SSH config (known_hosts + optional key)
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -78,11 +68,12 @@ jobs:
             chmod 600 "$HOME/.ssh/id_rsa"
           fi
 
-      - name: Deploy preview (SFTP mirror to /_{branch}/)
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+      - name: Deploy (SFTP mirror)
         shell: bash
         run: |
           set -euo pipefail
+
+          # Ensure cleanup of sensitive temporary file
           trap 'rm -f /tmp/deploy.lftp' EXIT
 
           if [[ -z "${SFTP_HOST:-}" || -z "${SFTP_USER:-}" || -z "${SFTP_DESTINATION:-}" ]]; then
@@ -92,22 +83,17 @@ jobs:
 
           SFTP_PORT="${SFTP_PORT:-22}"
 
-          # Turn a ref name like "feature/x-y" into a safe folder name "feature-x-y"
-          RAW_BRANCH="${GITHUB_REF_NAME}"
-          SAFE_BRANCH="$(printf '%s' "$RAW_BRANCH" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
-          PREVIEW_DESTINATION="${SFTP_DESTINATION}/_${SAFE_BRANCH}"
-
           # Prefer key-based auth if provided; otherwise fall back to password.
           if [[ -n "${SFTP_PRIVATE_KEY:-}" ]]; then
             CONNECT_PROGRAM="ssh -a -x -i $HOME/.ssh/id_rsa -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -p ${SFTP_PORT}"
+
             cat > /tmp/deploy.lftp <<EOF
           set net:timeout 20;
           set net:max-retries 2;
           set sftp:auto-confirm yes;
           set sftp:connect-program "${CONNECT_PROGRAM}";
           open -u "${SFTP_USER}" "sftp://${SFTP_HOST}";
-          mkdir -p "${PREVIEW_DESTINATION}";
-          mirror -R --delete --verbose --exclude-glob .git/ --exclude-glob .github/ ./ "${PREVIEW_DESTINATION}";
+          mirror -R --delete --verbose --exclude-glob .git/ --exclude-glob .github/ ./ "${SFTP_DESTINATION}";
           bye
           EOF
             lftp -f /tmp/deploy.lftp
@@ -124,8 +110,7 @@ jobs:
           set sftp:auto-confirm yes;
           set sftp:connect-program "${CONNECT_PROGRAM}";
           open -u "${SFTP_USER},${SFTP_PASSWORD}" "sftp://${SFTP_HOST}";
-          mkdir -p "${PREVIEW_DESTINATION}";
-          mirror -R --delete --verbose --exclude-glob .git/ --exclude-glob .github/ ./ "${PREVIEW_DESTINATION}";
+          mirror -R --delete --verbose --exclude-glob .git/ --exclude-glob .github/ ./ "${SFTP_DESTINATION}";
           bye
           EOF
             lftp -f /tmp/deploy.lftp
