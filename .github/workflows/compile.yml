@@ -81,9 +81,35 @@ jobs:
           chmod 600 "$HOME/.ssh/known_hosts"
 
           if [[ -n "${SFTP_PRIVATE_KEY:-}" ]]; then
-            printf '%s\n' "$SFTP_PRIVATE_KEY" > "$HOME/.ssh/id_rsa"
+            # Normalize CRLF->LF in case the secret was pasted with Windows line endings.
+            printf '%s\n' "$SFTP_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/id_rsa"
             chmod 600 "$HOME/.ssh/id_rsa"
           fi
+
+      - name: Verify SSH key authentication (non-interactive)
+        if: ${{ github.event_name != 'pull_request' && env.SFTP_HOST != '' && env.SFTP_USER != '' && env.SFTP_DESTINATION != '' && env.SFTP_PRIVATE_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SFTP_PORT="${SFTP_PORT:-22}"
+          echo "Checking public key auth works (BatchMode)..."
+          # This should not prompt. If it fails, the error output will usually explain why:
+          # - "Load key ...: invalid format" (bad paste / missing newlines)
+          # - "Permission denied (publickey)" (wrong key / not in authorized_keys for this user)
+          # - "Enter passphrase" (encrypted key; unsupported in this workflow)
+          ssh -vvv \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -i "$HOME/.ssh/id_rsa" \
+            -p "$SFTP_PORT" \
+            "${SFTP_USER}@${SFTP_HOST}" exit || {
+              echo "SSH public-key auth failed. Common causes:"
+              echo "- Secret SFTP_PRIVATE_KEY was pasted incorrectly (missing BEGIN/END lines or newlines)"
+              echo "- The key is encrypted with a passphrase (use an unencrypted deploy key)"
+              echo "- The matching public key isn't authorized on the server for this user"
+              exit 1
+            }
 
       - name: Deploy (SFTP mirror; main -> root, branches -> /_{branch}/)
         if: ${{ github.event_name != 'pull_request' && env.SFTP_HOST != '' && env.SFTP_USER != '' && env.SFTP_DESTINATION != '' }}
