@@ -401,6 +401,24 @@
         const runBtn = document.getElementById('run-btn');
         if (!editor || !highlight || !runBtn) return;
 
+        // Show build sha (and avoid caching for the build-info fetch).
+        (function() {
+            const shaEl = document.getElementById('build-sha');
+            if (!shaEl) return;
+
+            const cfgSha = (window.SYS64738_CONFIG && window.SYS64738_CONFIG.buildSha) ? String(window.SYS64738_CONFIG.buildSha) : '';
+            if (cfgSha) shaEl.textContent = cfgSha;
+
+            fetch(`build-info.json?t=${Date.now()}`, { cache: 'no-store' })
+                .then((r) => (r.ok ? r.json() : Promise.reject(new Error('build-info.json not found'))))
+                .then((info) => {
+                    if (info && info.sha) shaEl.textContent = String(info.sha);
+                })
+                .catch(() => {
+                    // ignore (local dev may not have build-info.json)
+                });
+        })();
+
         // When the editor is focused, keep the emulator from receiving keystrokes.
         // This is important for VICE.js (document-level handlers) and is a safety net in general.
         function swallowIfEditing(e) {

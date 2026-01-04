@@ -68,6 +68,16 @@ body.dev-page #emulator-container {
     letter-spacing: 1px;
 }
 
+.dev-meta {
+    margin-top: 2px;
+    font-size: 12px;
+    color: rgba(0, 255, 0, 0.75);
+}
+
+.dev-meta #build-sha {
+    color: #ffaa00;
+}
+
 .dev-status {
     padding: 10px 12px;
     border-bottom: 1px solid rgba(0, 255, 0, 0.35);

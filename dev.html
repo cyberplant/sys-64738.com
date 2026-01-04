@@ -4,14 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>sys-64738.com - C64 Emulator (Dev)</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=__SYS64738_BUILD_SHA__">
 </head>
 <body class="dev-page">
     <div id="emulator-container"></div>
 
     <aside class="dev-panel">
         <div class="dev-panel-header">
-            <div class="dev-title">BASIC DEV</div>
+            <div>
+                <div class="dev-title">BASIC DEV</div>
+                <div class="dev-meta">Build: <span id="build-sha">__SYS64738_BUILD_SHA__</span></div>
+            </div>
             <button id="run-btn" class="btn">RUN</button>
         </div>
         <div class="dev-status" id="dev-status">Ready.</div>
@@ -36,13 +39,42 @@
         // dev.html should boot without auto-loading programs/main.prg
         window.SYS64738_CONFIG = {
             autoLoadMain: false,
+            buildSha: '__SYS64738_BUILD_SHA__',
             // Prevent JSC64 from capturing keystrokes globally while editing.
             jsc64KeyboardListenerSelector: '#emulator-container'
         };
+
+        // IMPORTANT: Install key/mouse guards *before* emulator init.
+        // Some emulator backends register document-level handlers that can preventDefault(),
+        // which would stop typing in the editor. We swallow events inside the dev panel.
+        (function() {
+            function isInDevPanel(target) {
+                try {
+                    return !!(target && target.closest && target.closest('.dev-panel'));
+                } catch (_) {
+                    return false;
+                }
+            }
+
+            function swallow(e) {
+                if (!isInDevPanel(e.target)) return;
+                e.stopImmediatePropagation();
+                e.stopPropagation();
+                // Do NOT preventDefault; we want textarea editing to work.
+            }
+
+            // Capture-phase so we run before emulator/global listeners.
+            document.addEventListener('keydown', swallow, true);
+            document.addEventListener('keypress', swallow, true);
+            document.addEventListener('keyup', swallow, true);
+            document.addEventListener('pointerdown', swallow, true);
+            document.addEventListener('mousedown', swallow, true);
+            document.addEventListener('touchstart', swallow, true);
+        })();
     </script>
     <script src="lib/jquery.min.js"></script>
-    <script src="app.js"></script>
-    <script src="dev.js"></script>
+    <script src="app.js?v=__SYS64738_BUILD_SHA__"></script>
+    <script src="dev.js?v=__SYS64738_BUILD_SHA__"></script>
 </body>
 </html>
 
