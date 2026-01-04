@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>sys-64738.com - C64 Emulator (Dev)</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="dev-page">
+    <div id="emulator-container"></div>
+
+    <aside class="dev-panel">
+        <div class="dev-panel-header">
+            <div class="dev-title">BASIC DEV</div>
+            <button id="run-btn" class="btn">RUN</button>
+        </div>
+        <div class="dev-status" id="dev-status">Ready.</div>
+
+        <div class="editor-wrap">
+            <pre id="basic-highlight" class="basic-highlight" aria-hidden="true"></pre>
+            <textarea id="basic-editor"
+                spellcheck="false"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                wrap="off"
+            ></textarea>
+        </div>
+
+        <div class="dev-hint">
+            Type C64 BASIC (with or without line numbers) and click RUN to compile to a tokenized PRG and load it into the emulator.
+        </div>
+    </aside>
+
+    <script>
+        // dev.html should boot without auto-loading programs/main.prg
+        window.SYS64738_CONFIG = { autoLoadMain: false };
+    </script>
+    <script src="lib/jquery.min.js"></script>
+    <script src="app.js"></script>
+    <script src="dev.js"></script>
+</body>
+</html>
+

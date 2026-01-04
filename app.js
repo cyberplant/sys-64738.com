@@ -1,6 +1,16 @@
 // C64 Emulator Integration (VICE.js default, JSC64 fallback)
 let emulator = null; // JSC64 uses this as the jQuery container
 
+function shouldAutoLoadMain() {
+    // Pages may override emulator startup behavior (e.g. dev.html).
+    // Default: auto-load programs/main.prg like index.html/debug.html.
+    try {
+        return !(window.SYS64738_CONFIG && window.SYS64738_CONFIG.autoLoadMain === false);
+    } catch (_) {
+        return true;
+    }
+}
+
 const EmulatorBackend = {
     VICE: 'vice',
     JSC64: 'jsc64'
@@ -110,8 +120,10 @@ function initJSC64() {
 
     console.log('C64 Emulator initialized (JSC64)');
 
-    // Try to auto-load the compiled program if it exists
-    autoLoadProgram();
+    // Try to auto-load the compiled program if it exists (unless disabled by page config)
+    if (shouldAutoLoadMain()) {
+        autoLoadProgram();
+    }
 
     // Update status (only if program-info element exists - debug page)
     const programInfo = $('#program-info');
@@ -145,11 +157,17 @@ function initVICEAuto() {
 
     setProgramInfo('Starting emulator (VICE.js)...', '#00cc00');
 
-    // Default behavior mirrors the existing JSC64 auto-load behavior.
-    startVICE({
-        programName: 'main.prg',
-        programUrl: 'programs/main.prg'
-    });
+    if (shouldAutoLoadMain()) {
+        // Default behavior mirrors the existing JSC64 auto-load behavior.
+        startVICE({
+            programName: 'main.prg',
+            programUrl: 'programs/main.prg'
+        });
+    } else {
+        // Boot emulator without autostarting a program (dev.html uses RUN to load programs).
+        startVICE({});
+        setProgramInfo('Emulator ready. Use the editor RUN button to load a program.', '#00cc00');
+    }
 }
 
 function teardownVICE() {
@@ -222,6 +240,9 @@ function buildViceArguments(programName) {
         : ['-sound'];
 
     // VICE autostart works for PRG/D64 etc.
+    if (!programName) {
+        return audioArgs;
+    }
     return ['-autostart', programName].concat(audioArgs);
 }
 
@@ -237,11 +258,17 @@ function startVICE({ programName, programUrl, programBytes }) {
         }
 
         if (programBytes) {
+            if (!programName) {
+                throw new Error('Missing programName for programBytes');
+            }
             FS.createDataFile('/', programName, new Uint8Array(programBytes), true, true);
             return;
         }
 
         if (programUrl) {
+            if (!programName) {
+                throw new Error('Missing programName for programUrl');
+            }
             // Block program start until we fetch the file.
             const depId = `fetch:${programUrl}`;
             addRunDependency(depId);
