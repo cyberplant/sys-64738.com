@@ -63,7 +63,8 @@ fi
 # Verify the output file
 if [ -f "$OUTPUT_DIR/$OUTPUT_NAME" ]; then
     echo "📊 PRG file info:"
-    hexdump -C "$OUTPUT_DIR/$OUTPUT_NAME" | head -5
+    hexdump -C "$OUTPUT_DIR/$OUTPUT_NAME" | head -10
+    petcat -2 -- $OUTPUT_DIR/$OUTPUT_NAME
     echo ""
     
     # Check load address (little-endian: first byte is low, second is high)
