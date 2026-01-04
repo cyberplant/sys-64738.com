@@ -281,6 +281,7 @@ function startVICE({ programName, programUrl, programBytes }) {
             viceState.running = true;
             console.log('C64 Emulator initialized (VICE.js)');
             setProgramInfo('Emulator ready (VICE.js).', '#00cc00');
+            installViceAudioUnlock();
             // Apply scaling once the canvas exists.
             setTimeout(scaleCanvas, 50);
         }
@@ -292,6 +293,36 @@ function startVICE({ programName, programUrl, programBytes }) {
         activeBackend = EmulatorBackend.JSC64;
         initializeEmulator();
     });
+}
+
+function resumeViceAudio() {
+    // VICE.js (Emscripten SDL) stores the WebAudio context at SDL.audioContext.
+    const ctx = (typeof window.SDL !== 'undefined' && window.SDL && window.SDL.audioContext)
+        ? window.SDL.audioContext
+        : null;
+
+    if (!ctx || typeof ctx.resume !== 'function') {
+        return;
+    }
+
+    // If the browser blocked audio on page load, the context is usually "suspended".
+    if (ctx.state === 'suspended') {
+        ctx.resume().catch((e) => {
+            // Still blocked or failed; nothing else we can do without further user gestures.
+            console.warn('Could not resume AudioContext:', e);
+        });
+    }
+}
+
+function installViceAudioUnlock() {
+    // Browsers require a user gesture before AudioContext can start.
+    // We can't bypass that, but we *can* automatically resume on the first interaction.
+    const handler = () => resumeViceAudio();
+
+    // Capture phase to run ASAP on the gesture.
+    document.addEventListener('pointerdown', handler, { capture: true, passive: true });
+    document.addEventListener('touchstart', handler, { capture: true, passive: true });
+    document.addEventListener('keydown', handler, { capture: true, passive: true });
 }
 
 function autoLoadProgram() {
