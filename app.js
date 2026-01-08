@@ -1,6 +1,32 @@
 // C64 Emulator Integration (VICE.js default, JSC64 fallback)
 let emulator = null; // JSC64 uses this as the jQuery container
 
+function shouldAutoLoadMain() {
+    // Pages may override emulator startup behavior (e.g. dev.html).
+    // Default: auto-load programs/main.prg like index.html/debug.html.
+    try {
+        return !(window.SYS64738_CONFIG && window.SYS64738_CONFIG.autoLoadMain === false);
+    } catch (_) {
+        return true;
+    }
+}
+
+function getJSC64KeyboardEventListener() {
+    // JSC64 accepts a jQuery object to attach keyboard listeners to.
+    // Default behavior keeps legacy pages working (document-level).
+    try {
+        const cfg = window.SYS64738_CONFIG || {};
+        const sel = cfg && cfg.jsc64KeyboardListenerSelector;
+        if (sel) {
+            const el = $(sel);
+            if (el && el.length > 0) return el;
+        }
+    } catch (_) {
+        // ignore
+    }
+    return $(document);
+}
+
 const EmulatorBackend = {
     VICE: 'vice',
     JSC64: 'jsc64'
@@ -94,10 +120,9 @@ function initJSC64() {
     const container = $('#emulator-container');
 
     // Initialize JSC64
-    // The jsc64() function takes an optional keyboardEventListener parameter
-    // If not provided, it defaults to $(document)
-    // We'll pass $(document) explicitly to ensure it's a jQuery object
-    container.jsc64($(document));
+    // The jsc64() function takes an optional keyboardEventListener parameter.
+    // Default is document-level; some pages (dev.html) scope it to the emulator container.
+    container.jsc64(getJSC64KeyboardEventListener());
 
     // Get the JSC64 instance from the container's data
     emulator = container;
@@ -110,8 +135,10 @@ function initJSC64() {
 
     console.log('C64 Emulator initialized (JSC64)');
 
-    // Try to auto-load the compiled program if it exists
-    autoLoadProgram();
+    // Try to auto-load the compiled program if it exists (unless disabled by page config)
+    if (shouldAutoLoadMain()) {
+        autoLoadProgram();
+    }
 
     // Update status (only if program-info element exists - debug page)
     const programInfo = $('#program-info');
@@ -145,11 +172,17 @@ function initVICEAuto() {
 
     setProgramInfo('Starting emulator (VICE.js)...', '#00cc00');
 
-    // Default behavior mirrors the existing JSC64 auto-load behavior.
-    startVICE({
-        programName: 'main.prg',
-        programUrl: 'programs/main.prg'
-    });
+    if (shouldAutoLoadMain()) {
+        // Default behavior mirrors the existing JSC64 auto-load behavior.
+        startVICE({
+            programName: 'main.prg',
+            programUrl: 'programs/main.prg'
+        });
+    } else {
+        // Boot emulator without autostarting a program (dev.html uses RUN to load programs).
+        startVICE({});
+        setProgramInfo('Emulator ready. Use the editor RUN button to load a program.', '#00cc00');
+    }
 }
 
 function teardownVICE() {
@@ -222,6 +255,9 @@ function buildViceArguments(programName) {
         : ['-sound'];
 
     // VICE autostart works for PRG/D64 etc.
+    if (!programName) {
+        return audioArgs;
+    }
     return ['-autostart', programName].concat(audioArgs);
 }
 
@@ -237,11 +273,17 @@ function startVICE({ programName, programUrl, programBytes }) {
         }
 
         if (programBytes) {
+            if (!programName) {
+                throw new Error('Missing programName for programBytes');
+            }
             FS.createDataFile('/', programName, new Uint8Array(programBytes), true, true);
             return;
         }
 
         if (programUrl) {
+            if (!programName) {
+                throw new Error('Missing programName for programUrl');
+            }
             // Block program start until we fetch the file.
             const depId = `fetch:${programUrl}`;
             addRunDependency(depId);
