@@ -382,9 +382,12 @@ function loadViceRuntime() {
 
 function buildViceArguments(programName) {
     // Start muted by default. Only enable sound after the user explicitly requests it.
+    // NOTE: VICE uses "+sound" to disable sound and "-sound" to enable sound.
+    // If sound is enabled but WebAudio is still gesture-blocked, VICE can overrun its
+    // internal buffers. We avoid that by starting with sound explicitly OFF.
     const audioArgs = (viceAudioState.enabled && audioDetected())
-        ? ['-soundsync', '0', '-soundrate', '22050', '-soundfragsize', '2']
-        : ['-sound'];
+        ? ['-sound', '-soundsync', '0', '-soundrate', '22050', '-soundfragsize', '2']
+        : ['+sound'];
 
     // VICE autostart works for PRG/D64 etc.
     if (!programName) {
