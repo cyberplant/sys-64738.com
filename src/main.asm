@@ -156,7 +156,7 @@ coll_walls:
         eor BALL_DX
         sta BALL_DX
 .no_left:
-        cmp #280                ; ← Derecha safe (280<=255? NO! wait → 280>255 → ERROR!
+        cmp #242                ; ← Derecha safe (280<=255? NO! wait → 280>255 → ERROR!
         bcc .no_right
         lda #1
         eor BALL_DX
