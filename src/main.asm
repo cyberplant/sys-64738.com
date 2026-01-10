@@ -1,74 +1,243 @@
-; GUERRA DE SEÑALES - ML ACME MINIMAL - FIXED ERRORS
+; GUERRA DE SEÑALES - ML ACME - Paddle + Pelota + Rebotes
 ; Compila: acme -f cbm -o juego.prg este_archivo.asm
-; LOAD "JUEGO.PRG",8,1 en VICE
+; LOAD "JUEGO.PRG",8,1
 
 !cpu 6510
-!to "juego.prg",cbm     ; <-- SOLO UNA VEZ, AL PRINCIPIO!!!
+!to "juego.prg",cbm
 
-; Direcciones C64
-SCREEN   = $0400
-COLORRAM = $D800         ; <-- ESTO FALTABA! $D800 Color RAM
-VIC      = $D000
+SCREEN    = $0400
+COLORRAM  = $D800
+VIC       = $D000
+CIA1      = $DC00
+SPRITEN   = $D015
+SPRITEC0  = $D027   ; Color sprite 0
+SPRITEC1  = $D028   ; Color sprite 1
+
+PADDLE_X  = $80
+BALL_X    = $81
+BALL_Y    = $82
+BALL_DX   = $83
+BALL_DY   = $84
+PARTIDOS  = $85
+BAJADAS   = $86
 
 * = $0801
-        !byte $0C, $08, $0A, $00, $9E, $20, $34, $30, $39, $36, $00, $00, $00  ; SYS 4096
+        !byte $0C, $08, $0A, $00, $9E, $32, $30, $36, $31, $00, $00, $00   ; SYS 8192
 
-* = $1000  ; Start code $1000 (SYS 4096)
+* = $2000
 
 start:
+        jsr init_screen
+        jsr screen_text
+        jsr init_sprites
+        jsr init_game
+
+main_loop:
+        jsr read_keys
+        jsr move_paddle
+        jsr move_ball
+        jsr check_collisions
+        jsr update_scores
+        jmp main_loop
+
+init_screen:
         lda #0
-        sta $D020      ; Border negro
-        sta $D021      ; Bg negro
+        sta $D020
+        sta $D021
+        lda #$1B
+        sta $D011
+        lda #0
+        sta $D016
+        rts
 
-        ; Mensaje en pantalla centro
+screen_text:
         ldx #0
-msg_loop:
-        lda message,x
-        beq msg_done
-        sta SCREEN+120,x     ; Fila ~12, col 0+
-        lda #7               ; Amarillo para tema
-        sta COLORRAM+120,x
+text_loop:
+        lda msg_text,x
+        beq text_end
+        sec
+        sbc #64                ; PETSCII → screen code
+        sta SCREEN+40*2+10,x   ; fila ~3, centrado
+        lda #7                 ; amarillo
+        sta COLORRAM+40*2+10,x
         inx
-        cpx #28              ; Longitud msg
-        bne msg_loop
+        cpx #msg_length
+        bne text_loop
+text_end:
+        rts
 
-msg_done:
-        ; Sprite simple abajo centro
-        lda #160            ; X centro (320/2)
-        sta VIC+0           ; Sprite 0 X
-        lda #220            ; Y abajo
-        sta VIC+1           ; Sprite 0 Y
-        lda #%00000001      ; Enable sprite 0
-        sta $D015
-        lda #6              ; Azul claro
-        sta $D027           ; Sprite 0 color
+init_sprites:
+        lda #$C0               ; $3000 / 64 = $C0 → paddle
+        sta $07F8
+        lda #$C1               ; $3040 / 64 = $C1 → pelota
+        sta $07F9
+        lda #%00000011
+        sta SPRITEN
+        lda #14                ; celeste paddle
+        sta SPRITEC0
+        lda #12                ; naranja pelota
+        sta SPRITEC1
+        rts
 
-loop:   jmp loop            ; Infinito - agrega logica aqui despues
+init_game:
+        lda #160
+        sta PADDLE_X
+        lda #220
+        sta VIC+1              ; paddle Y
+        lda #160
+        sta BALL_X
+        sta VIC+2              ; ball X
+        lda #100
+        sta BALL_Y
+        sta VIC+3              ; ball Y
+        lda #2
+        sta BALL_DX
+        lda #$FE               ; -2 arriba
+        sta BALL_DY
+        lda #0
+        sta PARTIDOS
+        sta BAJADAS
+        rts
 
-message:
-        !text "GUERRA DE SENALES ML OK! 1=IZQ 2=DER"
+read_keys:
+        lda CIA1
+        and #%00010000         ; 1 = izquierda
+        beq .izquierda
+        lda CIA1
+        and #%00100000         ; 2 = derecha
+        beq .derecha
+        rts
+
+.izquierda:
+        dec PADDLE_X
+        lda PADDLE_X
+        cmp #16
+        bcs .fin_keys
+        lda #16
+        sta PADDLE_X
+        jmp .fin_keys
+
+.derecha:
+        inc PADDLE_X
+        lda PADDLE_X
+        cmp #280
+        bcc .fin_keys
+        lda #280
+        sta PADDLE_X
+
+.fin_keys:
+        rts
+
+move_paddle:
+        lda PADDLE_X
+        sta VIC+0              ; sprite 0 X
+        rts
+
+move_ball:
+        lda BALL_X
+        clc
+        adc BALL_DX
+        sta BALL_X
+        sta VIC+2
+        lda BALL_Y
+        clc
+        adc BALL_DY
+        sta BALL_Y
+        sta VIC+3
+        rts
+
+check_collisions:
+        jsr coll_walls
+        jsr coll_paddle
+        rts
+
+coll_walls:
+        lda BALL_X
+        cmp #24
+        bcs .no_left_wall
+        lda #1
+        eor BALL_DX
+        sta BALL_DX
+.no_left_wall:
+        cmp #312
+        bcc .no_right_wall
+        lda #1
+        eor BALL_DX
+        sta BALL_DX
+.no_right_wall:
+        lda BALL_Y
+        cmp #48
+        bcs .no_top
+        lda #1
+        eor BALL_DY
+        sta BALL_DY
+.no_top:
+        cmp #216
+        bcc .no_bottom
+        inc BAJADAS
+        jsr reset_ball
+.no_bottom:
+        rts
+
+coll_paddle:
+        lda BALL_Y
+        cmp #208
+        bcc .no_paddle_hit
+        lda BALL_X
+        cmp PADDLE_X
+        bcc .no_paddle_hit
+        lda PADDLE_X
+        clc
+        adc #32
+        cmp BALL_X
+        bcc .no_paddle_hit
+        lda #1
+        eor BALL_DY
+        sta BALL_DY
+        inc PARTIDOS
+.no_paddle_hit:
+        rts
+
+reset_ball:
+        lda #160
+        sta BALL_X
+        sta VIC+2
+        lda #100
+        sta BALL_Y
+        sta VIC+3
+        lda #2
+        sta BALL_DX
+        lda #$FE
+        sta BALL_DY
+        rts
+
+update_scores:
+        lda PARTIDOS
+        clc
+        adc #48
+        sta SCREEN+12
+        lda BAJADAS
+        clc
+        adc #48
+        sta SCREEN+24
+        rts
+
+msg_text:
+        !text "GUERRA DE SENALES BREAKOUT ML!"
         !byte 0
+msg_length = *-msg_text-1
 
-; Sprite 0: Barra paleta ▄▄▄▄ (24x21 pixels)
-* = $2000                 ; $2000 / 64 = $80 → POKE $07F8,$80
-        !byte $3C,$7E,$FF,$FF,$FF,$FF,$FF,$FF  ; Fila 0
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 1
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 2
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 3
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 4
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 5
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 6
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 7
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 8
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 9
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 10
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 11
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 12
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 13
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 14
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 15
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 16
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 17
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 18
-        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF  ; 19
-        !byte $3C,$7E,$FF,$FF,$FF,$FF,$FF,$FF  ; 20 Fila final
+; Sprites al FINAL (después del código)
+* = $3000
+paddle_data:    ; Barra ancha simple
+        !byte $3C,$7E,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$3C
+        !fill 32,0
+
+* = $3040
+ball_data:      ; Pelota redonda
+        !byte $18,$3C,$7E,$FF,$FF,$7E,$3C,$18
+        !byte $3C,$7E,$FF,$FF,$FF,$FF,$7E,$3C
+        !byte $7E,$FF,$FF,$FF,$FF,$FF,$FF,$7E
+        !byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+        !fill 32,0
