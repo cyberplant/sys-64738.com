@@ -279,6 +279,496 @@
         return prg;
     }
 
+    // --- 6502 assembler (minimal but practical) ---
+
+    const BRANCH_MNEMONICS = new Set(['BPL', 'BMI', 'BVC', 'BVS', 'BCC', 'BCS', 'BNE', 'BEQ']);
+
+    // Legal 6502 opcodes (common subset is still broad; we include the standard set)
+    const OPCODES = {
+        ADC: { imm: 0x69, zp: 0x65, zpx: 0x75, abs: 0x6D, absx: 0x7D, absy: 0x79, indx: 0x61, indy: 0x71 },
+        AND: { imm: 0x29, zp: 0x25, zpx: 0x35, abs: 0x2D, absx: 0x3D, absy: 0x39, indx: 0x21, indy: 0x31 },
+        ASL: { acc: 0x0A, zp: 0x06, zpx: 0x16, abs: 0x0E, absx: 0x1E },
+        BCC: { rel: 0x90 }, BCS: { rel: 0xB0 }, BEQ: { rel: 0xF0 }, BMI: { rel: 0x30 }, BNE: { rel: 0xD0 }, BPL: { rel: 0x10 }, BVC: { rel: 0x50 }, BVS: { rel: 0x70 },
+        BIT: { zp: 0x24, abs: 0x2C },
+        BRK: { imp: 0x00 },
+        CLC: { imp: 0x18 }, CLD: { imp: 0xD8 }, CLI: { imp: 0x58 }, CLV: { imp: 0xB8 },
+        CMP: { imm: 0xC9, zp: 0xC5, zpx: 0xD5, abs: 0xCD, absx: 0xDD, absy: 0xD9, indx: 0xC1, indy: 0xD1 },
+        CPX: { imm: 0xE0, zp: 0xE4, abs: 0xEC },
+        CPY: { imm: 0xC0, zp: 0xC4, abs: 0xCC },
+        DEC: { zp: 0xC6, zpx: 0xD6, abs: 0xCE, absx: 0xDE },
+        DEX: { imp: 0xCA }, DEY: { imp: 0x88 },
+        EOR: { imm: 0x49, zp: 0x45, zpx: 0x55, abs: 0x4D, absx: 0x5D, absy: 0x59, indx: 0x41, indy: 0x51 },
+        INC: { zp: 0xE6, zpx: 0xF6, abs: 0xEE, absx: 0xFE },
+        INX: { imp: 0xE8 }, INY: { imp: 0xC8 },
+        JMP: { abs: 0x4C, ind: 0x6C },
+        JSR: { abs: 0x20 },
+        LDA: { imm: 0xA9, zp: 0xA5, zpx: 0xB5, abs: 0xAD, absx: 0xBD, absy: 0xB9, indx: 0xA1, indy: 0xB1 },
+        LDX: { imm: 0xA2, zp: 0xA6, zpy: 0xB6, abs: 0xAE, absy: 0xBE },
+        LDY: { imm: 0xA0, zp: 0xA4, zpx: 0xB4, abs: 0xAC, absx: 0xBC },
+        LSR: { acc: 0x4A, zp: 0x46, zpx: 0x56, abs: 0x4E, absx: 0x5E },
+        NOP: { imp: 0xEA },
+        ORA: { imm: 0x09, zp: 0x05, zpx: 0x15, abs: 0x0D, absx: 0x1D, absy: 0x19, indx: 0x01, indy: 0x11 },
+        PHA: { imp: 0x48 }, PHP: { imp: 0x08 }, PLA: { imp: 0x68 }, PLP: { imp: 0x28 },
+        ROL: { acc: 0x2A, zp: 0x26, zpx: 0x36, abs: 0x2E, absx: 0x3E },
+        ROR: { acc: 0x6A, zp: 0x66, zpx: 0x76, abs: 0x6E, absx: 0x7E },
+        RTI: { imp: 0x40 }, RTS: { imp: 0x60 },
+        SBC: { imm: 0xE9, zp: 0xE5, zpx: 0xF5, abs: 0xED, absx: 0xFD, absy: 0xF9, indx: 0xE1, indy: 0xF1 },
+        SEC: { imp: 0x38 }, SED: { imp: 0xF8 }, SEI: { imp: 0x78 },
+        STA: { zp: 0x85, zpx: 0x95, abs: 0x8D, absx: 0x9D, absy: 0x99, indx: 0x81, indy: 0x91 },
+        STX: { zp: 0x86, zpy: 0x96, abs: 0x8E },
+        STY: { zp: 0x84, zpx: 0x94, abs: 0x8C },
+        TAX: { imp: 0xAA }, TAY: { imp: 0xA8 }, TSX: { imp: 0xBA }, TXA: { imp: 0x8A }, TXS: { imp: 0x9A }, TYA: { imp: 0x98 }
+    };
+
+    function stripAsmComment(line) {
+        // Strip ';' comments, ignoring ';' inside double quotes.
+        let inStr = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') inStr = !inStr;
+            if (!inStr && ch === ';') return line.slice(0, i);
+        }
+        return line;
+    }
+
+    function parseAsmStringLiteral(s) {
+        // s includes surrounding quotes
+        const raw = s.slice(1, -1);
+        const out = [];
+        for (let i = 0; i < raw.length; i++) {
+            const ch = raw[i];
+            if (ch === '\\') {
+                const n = raw[i + 1] || '';
+                if (n === 'n') { out.push(0x0D); i++; continue; } // CR (C64 newline)
+                if (n === 'r') { out.push(0x0D); i++; continue; }
+                if (n === 't') { out.push(0x09); i++; continue; }
+                if (n === '"') { out.push(0x22); i++; continue; }
+                if (n === '\\') { out.push(0x5C); i++; continue; }
+                if (n === 'x') {
+                    const h = raw.slice(i + 2, i + 4);
+                    if (!/^[0-9a-fA-F]{2}$/.test(h)) throw new Error(`Invalid \\x escape: \\x${h}`);
+                    out.push(parseInt(h, 16) & 0xFF);
+                    i += 3;
+                    continue;
+                }
+                // Unknown escape: treat literally (best-effort)
+            }
+            out.push(encodeCharToPetsciiByte(ch));
+        }
+        return out;
+    }
+
+    function tokenizeExpr(expr) {
+        const s = String(expr || '').trim();
+        const tokens = [];
+        let i = 0;
+        while (i < s.length) {
+            const ch = s[i];
+            if (/\s/.test(ch)) { i++; continue; }
+            if (ch === '(' || ch === ')' || ch === '+' || ch === '-' || ch === '<' || ch === '>' ) {
+                tokens.push({ t: ch });
+                i++;
+                continue;
+            }
+            if (ch === '*') {
+                tokens.push({ t: 'PC' });
+                i++;
+                continue;
+            }
+            if (ch === '$') {
+                const m = s.slice(i + 1).match(/^[0-9a-fA-F]+/);
+                if (!m) throw new Error(`Invalid hex literal near: ${s.slice(i)}`);
+                tokens.push({ t: 'num', v: parseInt(m[0], 16) });
+                i += 1 + m[0].length;
+                continue;
+            }
+            if (ch === '%') {
+                const m = s.slice(i + 1).match(/^[01]+/);
+                if (!m) throw new Error(`Invalid binary literal near: ${s.slice(i)}`);
+                tokens.push({ t: 'num', v: parseInt(m[0], 2) });
+                i += 1 + m[0].length;
+                continue;
+            }
+            if (/[0-9]/.test(ch)) {
+                const m = s.slice(i).match(/^\d+/);
+                tokens.push({ t: 'num', v: parseInt(m[0], 10) });
+                i += m[0].length;
+                continue;
+            }
+            if (/[A-Za-z_.]/.test(ch)) {
+                const m = s.slice(i).match(/^[A-Za-z_.][A-Za-z0-9_.]*/);
+                tokens.push({ t: 'id', v: m[0] });
+                i += m[0].length;
+                continue;
+            }
+            throw new Error(`Unexpected character in expression: '${ch}'`);
+        }
+        return tokens;
+    }
+
+    function evalExpr(expr, symbols, pc) {
+        const tokens = tokenizeExpr(expr);
+        let idx = 0;
+
+        function peek() { return tokens[idx] || null; }
+        function take() { return tokens[idx++] || null; }
+
+        function parsePrimary() {
+            const tok = take();
+            if (!tok) throw new Error('Unexpected end of expression');
+            if (tok.t === 'num') return tok.v | 0;
+            if (tok.t === 'PC') return pc | 0;
+            if (tok.t === 'id') {
+                const key = tok.v;
+                if (!Object.prototype.hasOwnProperty.call(symbols, key)) {
+                    throw new Error(`Unknown symbol: ${key}`);
+                }
+                return symbols[key] | 0;
+            }
+            if (tok.t === '(') {
+                const v = parseAddSub();
+                const close = take();
+                if (!close || close.t !== ')') throw new Error('Missing )');
+                return v;
+            }
+            throw new Error(`Unexpected token: ${tok.t}`);
+        }
+
+        function parseUnary() {
+            const tok = peek();
+            if (tok && (tok.t === '+' || tok.t === '-' || tok.t === '<' || tok.t === '>')) {
+                take();
+                const v = parseUnary();
+                if (tok.t === '+') return v;
+                if (tok.t === '-') return -v;
+                if (tok.t === '<') return v & 0xFF;
+                if (tok.t === '>') return (v >> 8) & 0xFF;
+            }
+            return parsePrimary();
+        }
+
+        function parseAddSub() {
+            let v = parseUnary();
+            while (true) {
+                const tok = peek();
+                if (!tok || (tok.t !== '+' && tok.t !== '-')) break;
+                take();
+                const rhs = parseUnary();
+                v = (tok.t === '+') ? (v + rhs) : (v - rhs);
+            }
+            return v;
+        }
+
+        const val = parseAddSub();
+        if (idx !== tokens.length) {
+            throw new Error('Unexpected tokens at end of expression');
+        }
+        return val | 0;
+    }
+
+    function splitCsvArgs(s) {
+        const out = [];
+        let cur = '';
+        let inStr = false;
+        for (let i = 0; i < s.length; i++) {
+            const ch = s[i];
+            if (ch === '"') {
+                inStr = !inStr;
+                cur += ch;
+                continue;
+            }
+            if (!inStr && ch === ',') {
+                out.push(cur.trim());
+                cur = '';
+                continue;
+            }
+            cur += ch;
+        }
+        if (cur.trim()) out.push(cur.trim());
+        return out;
+    }
+
+    function detectAddrMode(mnemonic, operandRaw, symbols, pc, pass) {
+        const op = (operandRaw || '').trim();
+        const upper = mnemonic.toUpperCase();
+        if (!op) return { mode: 'imp' };
+        if (op.toUpperCase() === 'A') return { mode: 'acc' };
+        if (BRANCH_MNEMONICS.has(upper)) return { mode: 'rel', expr: op };
+        if (op.startsWith('#')) return { mode: 'imm', expr: op.slice(1).trim() };
+
+        const mIndX = op.match(/^\(\s*(.+)\s*,\s*X\s*\)$/i);
+        if (mIndX) return { mode: 'indx', expr: mIndX[1].trim() };
+        const mIndY = op.match(/^\(\s*(.+)\s*\)\s*,\s*Y\s*$/i);
+        if (mIndY) return { mode: 'indy', expr: mIndY[1].trim() };
+        const mInd = op.match(/^\(\s*(.+)\s*\)$/);
+        if (mInd) return { mode: 'ind', expr: mInd[1].trim() };
+
+        const mX = op.match(/^(.+)\s*,\s*X\s*$/i);
+        if (mX) {
+            const expr = mX[1].trim();
+            const hasLabel = /[A-Za-z_.]/.test(expr);
+            if (pass === 2 && !hasLabel) {
+                const v = evalExpr(expr, symbols, pc);
+                return (v >= 0 && v <= 0xFF) ? { mode: 'zpx', expr } : { mode: 'absx', expr };
+            }
+            // Pass 1 or label: default to absolute-indexed
+            return { mode: hasLabel ? 'absx' : 'zpx', expr };
+        }
+        const mY = op.match(/^(.+)\s*,\s*Y\s*$/i);
+        if (mY) {
+            const expr = mY[1].trim();
+            const hasLabel = /[A-Za-z_.]/.test(expr);
+            if (pass === 2 && !hasLabel) {
+                const v = evalExpr(expr, symbols, pc);
+                return (v >= 0 && v <= 0xFF) ? { mode: 'zpy', expr } : { mode: 'absy', expr };
+            }
+            return { mode: hasLabel ? 'absy' : 'zpy', expr };
+        }
+
+        // Plain address
+        const hasLabel = /[A-Za-z_.]/.test(op);
+        if (pass === 2 && !hasLabel) {
+            const v = evalExpr(op, symbols, pc);
+            return (v >= 0 && v <= 0xFF) ? { mode: 'zp', expr: op } : { mode: 'abs', expr: op };
+        }
+        return { mode: hasLabel ? 'abs' : 'zp', expr: op };
+    }
+
+    function assemble6502(source, opts) {
+        const options = opts || {};
+        const forbidOrg = !!options.forbidOrg;
+        let pc = (options.origin != null) ? (options.origin | 0) : 0x1000;
+        const startPc = pc;
+
+        const norm = String(source || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const rawLines = norm.split('\n');
+
+        const statements = [];
+        const symbols = Object.create(null);
+
+        function defineSymbol(name, value) {
+            const key = String(name);
+            if (Object.prototype.hasOwnProperty.call(symbols, key)) {
+                throw new Error(`Duplicate symbol: ${key}`);
+            }
+            symbols[key] = value | 0;
+        }
+
+        function parseLine(raw, lineNo) {
+            const noComment = stripAsmComment(raw);
+            const trimmed = noComment.trim();
+            if (!trimmed) return null;
+
+            // Label at start: foo:
+            let rest = trimmed;
+            const mLabel = rest.match(/^([A-Za-z_.][A-Za-z0-9_.]*)\s*:\s*(.*)$/);
+            if (mLabel) {
+                return { kind: 'label', name: mLabel[1], rest: (mLabel[2] || '').trim(), lineNo, raw };
+            }
+
+            // Constant: foo = expr
+            const mEq = rest.match(/^([A-Za-z_.][A-Za-z0-9_.]*)\s*=\s*(.+)$/);
+            if (mEq) {
+                return { kind: 'equ', name: mEq[1], expr: mEq[2], lineNo, raw };
+            }
+
+            return { kind: 'stmt', text: rest, lineNo, raw };
+        }
+
+        // PASS 1: gather symbols and sizes (labels always abs; no zp optimization for label refs)
+        for (let i = 0; i < rawLines.length; i++) {
+            const rec = parseLine(rawLines[i], i + 1);
+            if (!rec) continue;
+
+            if (rec.kind === 'label') {
+                defineSymbol(rec.name, pc);
+                if (!rec.rest) continue;
+                // treat trailing part as statement
+                rec.kind = 'stmt';
+                rec.text = rec.rest;
+            }
+
+            if (rec.kind === 'equ') {
+                const v = evalExpr(rec.expr, symbols, pc);
+                defineSymbol(rec.name, v);
+                continue;
+            }
+
+            // Directives / instructions
+            const text = rec.text;
+            const m = text.match(/^([.A-Za-z][A-Za-z0-9_.]*)\s*(.*)$/);
+            if (!m) throw new Error(`ASM parse error on line ${rec.lineNo}`);
+            const head = m[1];
+            const tail = (m[2] || '').trim();
+            const upHead = head.toUpperCase();
+
+            // ORG
+            if (upHead === '.ORG' || head === '*=') {
+                if (forbidOrg) {
+                    throw new Error(`.org/*= is not supported in dev.html ASM mode (line ${rec.lineNo})`);
+                }
+                const v = evalExpr(tail, symbols, pc);
+                pc = v & 0xFFFF;
+                statements.push({ type: 'org', pc, lineNo: rec.lineNo, raw: rec.raw });
+                continue;
+            }
+
+            if (upHead === '.BYTE' || upHead === '!BYTE') {
+                const args = splitCsvArgs(tail);
+                let size = 0;
+                for (const a of args) {
+                    if (!a) continue;
+                    if (/^".*"$/.test(a)) size += parseAsmStringLiteral(a).length;
+                    else size += 1;
+                }
+                statements.push({ type: 'data', kind: 'byte', pc, args, lineNo: rec.lineNo, raw: rec.raw, size });
+                pc += size;
+                continue;
+            }
+            if (upHead === '.WORD' || upHead === '!WORD') {
+                const args = splitCsvArgs(tail);
+                const size = args.filter(Boolean).length * 2;
+                statements.push({ type: 'data', kind: 'word', pc, args, lineNo: rec.lineNo, raw: rec.raw, size });
+                pc += size;
+                continue;
+            }
+            if (upHead === '.TEXT' || upHead === '.ASCII' || upHead === '!TEXT') {
+                const arg = tail.trim();
+                if (!/^".*"$/.test(arg)) throw new Error(`.text expects a quoted string (line ${rec.lineNo})`);
+                const bytes = parseAsmStringLiteral(arg);
+                statements.push({ type: 'data', kind: 'text', pc, bytes, lineNo: rec.lineNo, raw: rec.raw, size: bytes.length });
+                pc += bytes.length;
+                continue;
+            }
+
+            // Instruction
+            const mnemonic = upHead;
+            const operandRaw = tail;
+            if (!Object.prototype.hasOwnProperty.call(OPCODES, mnemonic)) {
+                throw new Error(`Unknown mnemonic/directive '${head}' on line ${rec.lineNo}`);
+            }
+            const modeInfo = detectAddrMode(mnemonic, operandRaw, symbols, pc, 1);
+            const mode = modeInfo.mode;
+            const opcode = OPCODES[mnemonic][mode];
+            if (opcode == null) {
+                throw new Error(`Addressing mode not supported for ${mnemonic} (${mode}) on line ${rec.lineNo}`);
+            }
+            const size = (mode === 'imp' || mode === 'acc') ? 1 : (mode === 'imm' || mode === 'zp' || mode === 'zpx' || mode === 'zpy' || mode === 'indx' || mode === 'indy' || mode === 'rel') ? 2 : 3;
+            statements.push({ type: 'ins', pc, mnemonic, mode, operand: modeInfo.expr || null, lineNo: rec.lineNo, raw: rec.raw, size });
+            pc += size;
+        }
+
+        const endPc = pc;
+        const out = new Uint8Array(Math.max(0, endPc - startPc));
+
+        // PASS 2: encode
+        pc = startPc;
+        let write = 0;
+        for (const st of statements) {
+            if (st.type === 'org') {
+                // For now we only support contiguous output; .org is allowed only when forbidOrg=false,
+                // but we still keep it simple and disallow gaps in output.
+                if (st.pc !== pc) {
+                    throw new Error(`.org changed PC from $${pc.toString(16)} to $${st.pc.toString(16)}; gaps are not supported`);
+                }
+                continue;
+            }
+            if (st.type === 'data') {
+                if (st.pc !== pc) throw new Error('Internal assembler error: PC mismatch (data)');
+                if (st.kind === 'text') {
+                    out.set(new Uint8Array(st.bytes), write);
+                    write += st.bytes.length;
+                    pc += st.bytes.length;
+                    continue;
+                }
+                if (st.kind === 'byte') {
+                    for (const a of st.args) {
+                        if (!a) continue;
+                        if (/^".*"$/.test(a)) {
+                            const bytes = parseAsmStringLiteral(a);
+                            out.set(new Uint8Array(bytes), write);
+                            write += bytes.length;
+                            pc += bytes.length;
+                        } else {
+                            const v = evalExpr(a, symbols, pc) & 0xFF;
+                            out[write++] = v;
+                            pc += 1;
+                        }
+                    }
+                    continue;
+                }
+                if (st.kind === 'word') {
+                    for (const a of st.args) {
+                        if (!a) continue;
+                        const v = evalExpr(a, symbols, pc) & 0xFFFF;
+                        out[write++] = v & 0xFF;
+                        out[write++] = (v >> 8) & 0xFF;
+                        pc += 2;
+                    }
+                    continue;
+                }
+                throw new Error('Internal assembler error: unknown data kind');
+            }
+            if (st.type === 'ins') {
+                if (st.pc !== pc) throw new Error('Internal assembler error: PC mismatch (ins)');
+                const modeInfo = detectAddrMode(st.mnemonic, st.operand ? (st.mode === 'imm' ? '#' + st.operand : st.operand) : '', symbols, pc, 2);
+                const mode = st.mode; // keep mode chosen in pass1 (stable sizing)
+                const opcode = OPCODES[st.mnemonic][mode];
+                if (opcode == null) throw new Error(`Cannot encode ${st.mnemonic} (${mode})`);
+                out[write++] = opcode & 0xFF;
+                if (mode === 'imp' || mode === 'acc') {
+                    pc += 1;
+                    continue;
+                }
+                if (mode === 'rel') {
+                    const target = evalExpr(st.operand, symbols, pc) & 0xFFFF;
+                    const nextPc = (pc + 2) & 0xFFFF;
+                    let off = (target - nextPc) | 0;
+                    if (off < -128 || off > 127) {
+                        throw new Error(`Branch out of range on line ${st.lineNo} (offset ${off})`);
+                    }
+                    out[write++] = off & 0xFF;
+                    pc += 2;
+                    continue;
+                }
+                if (mode === 'imm' || mode === 'zp' || mode === 'zpx' || mode === 'zpy' || mode === 'indx' || mode === 'indy') {
+                    const v = evalExpr(st.operand, symbols, pc) & 0xFF;
+                    out[write++] = v;
+                    pc += 2;
+                    continue;
+                }
+                // abs / absx / absy / ind
+                const v = evalExpr(st.operand, symbols, pc) & 0xFFFF;
+                out[write++] = v & 0xFF;
+                out[write++] = (v >> 8) & 0xFF;
+                pc += 3;
+                continue;
+            }
+        }
+
+        return { origin: startPc & 0xFFFF, bytes: out, symbols };
+    }
+
+    function compileAsmAutoRunToPrg(source) {
+        // Build a BASIC stub that does SYS <codeStart>, then append machine code bytes right after it.
+        // We iterate because changing the SYS number of digits can change BASIC program length.
+        let codeStart = 0x080D; // typical-ish initial guess
+        let prgStub = null;
+        for (let i = 0; i < 6; i++) {
+            const stubSrc = `10 SYS ${codeStart}`;
+            prgStub = compileBasicV2ToPrg(stubSrc);
+            const nextCodeStart = (LOAD_ADDR + (prgStub.length - 2)) & 0xFFFF;
+            if (nextCodeStart === codeStart) break;
+            codeStart = nextCodeStart;
+        }
+
+        const asm = assemble6502(source, { origin: codeStart, forbidOrg: true });
+        const finalPrg = new Uint8Array(prgStub.length + asm.bytes.length);
+        finalPrg.set(prgStub, 0);
+        finalPrg.set(asm.bytes, prgStub.length);
+        return { prg: finalPrg, entry: codeStart, size: asm.bytes.length };
+    }
+
     // --- Basic syntax highlighting (simple, no external deps) ---
 
     function escapeHtml(s) {
@@ -385,6 +875,108 @@
         return lines.map(highlightLine).join('\n') + '\n';
     }
 
+    // --- ASM syntax highlighting (simple, not a full parser) ---
+
+    const ASM_MNEMONICS = new Set(Object.keys(OPCODES));
+    const ASM_DIRECTIVES = new Set(['.BYTE', '.WORD', '.TEXT', '.ASCII', '.ORG', '*=']);
+
+    function highlightAsmLine(line) {
+        const raw = String(line || '');
+        const noComment = stripAsmComment(raw);
+        const comment = raw.slice(noComment.length);
+
+        // Label at start
+        let head = noComment;
+        let out = '';
+        const mLabel = head.match(/^(\s*)([A-Za-z_.][A-Za-z0-9_.]*)\s*:\s*(.*)$/);
+        if (mLabel) {
+            out += `${escapeHtml(mLabel[1])}<span class="asm-lbl">${escapeHtml(mLabel[2])}</span>:`;
+            head = mLabel[3] || '';
+        }
+
+        // Tokenize first word (mnemonic/directive)
+        const m = head.match(/^(\s*)([.A-Za-z*][A-Za-z0-9_.=]*)\b(.*)$/);
+        if (m) {
+            const pre = m[1] || '';
+            const w = (m[2] || '');
+            const rest = m[3] || '';
+            const up = w.toUpperCase();
+            out += escapeHtml(pre);
+            if (ASM_MNEMONICS.has(up)) {
+                out += `<span class="asm-op">${escapeHtml(w)}</span>`;
+            } else if (ASM_DIRECTIVES.has(up) || up === '!BYTE' || up === '!WORD' || up === '!TEXT') {
+                out += `<span class="asm-dir">${escapeHtml(w)}</span>`;
+            } else {
+                out += escapeHtml(w);
+            }
+
+            // Highlight quoted strings + numbers in the rest (small scanner to avoid HTML-escaping issues)
+            let i = 0;
+            while (i < rest.length) {
+                const ch = rest[i];
+                if (ch === '"') {
+                    // quoted string (allow backslash escapes)
+                    let j = i + 1;
+                    let esc = false;
+                    while (j < rest.length) {
+                        const cj = rest[j];
+                        if (esc) {
+                            esc = false;
+                            j++;
+                            continue;
+                        }
+                        if (cj === '\\') { esc = true; j++; continue; }
+                        if (cj === '"') { j++; break; }
+                        j++;
+                    }
+                    const s = rest.slice(i, j);
+                    out += `<span class="asm-str">${escapeHtml(s)}</span>`;
+                    i = j;
+                    continue;
+                }
+
+                // Hex / binary / decimal numbers
+                const tail = rest.slice(i);
+                const mHex = tail.match(/^\$[0-9a-fA-F]+/);
+                if (mHex) {
+                    out += `<span class="asm-num">${escapeHtml(mHex[0])}</span>`;
+                    i += mHex[0].length;
+                    continue;
+                }
+                const mBin = tail.match(/^%[01]+/);
+                if (mBin) {
+                    out += `<span class="asm-num">${escapeHtml(mBin[0])}</span>`;
+                    i += mBin[0].length;
+                    continue;
+                }
+                const mDec = tail.match(/^\d+/);
+                if (mDec) {
+                    out += `<span class="asm-num">${escapeHtml(mDec[0])}</span>`;
+                    i += mDec[0].length;
+                    continue;
+                }
+
+                out += escapeHtml(ch);
+                i++;
+            }
+        } else {
+            out += escapeHtml(head);
+        }
+
+        if (comment) {
+            out += `<span class="asm-com">${escapeHtml(comment)}</span>`;
+        }
+        return out;
+    }
+
+    function renderAsmHighlight(text) {
+        const lines = String(text || '')
+            .replace(/\r\n/g, '\n')
+            .replace(/\r/g, '\n')
+            .split('\n');
+        return lines.map(highlightAsmLine).join('\n') + '\n';
+    }
+
     function setStatus(message, kind) {
         const el = document.getElementById('dev-status');
         if (!el) return;
@@ -396,10 +988,16 @@
     }
 
     function bootEditor() {
-        const editor = document.getElementById('basic-editor');
-        const highlight = document.getElementById('basic-highlight');
         const runBtn = document.getElementById('run-btn');
-        if (!editor || !highlight || !runBtn) return;
+        const modeBasicBtn = document.getElementById('mode-basic');
+        const modeAsmBtn = document.getElementById('mode-asm');
+        const hintEl = document.getElementById('dev-hint');
+
+        const basicEditor = document.getElementById('basic-editor');
+        const basicHighlight = document.getElementById('basic-highlight');
+        const asmEditor = document.getElementById('asm-editor');
+        const asmHighlight = document.getElementById('asm-highlight');
+        if (!runBtn || !modeBasicBtn || !modeAsmBtn || !basicEditor || !basicHighlight || !asmEditor || !asmHighlight) return;
 
         // Show build sha (and avoid caching for the build-info fetch).
         (function() {
@@ -422,7 +1020,7 @@
         // When the editor is focused, keep the emulator from receiving keystrokes.
         // This is important for VICE.js (document-level handlers) and is a safety net in general.
         function swallowIfEditing(e) {
-            if (document.activeElement === editor) {
+            if (document.activeElement === basicEditor || document.activeElement === asmEditor) {
                 e.stopImmediatePropagation();
             }
         }
@@ -430,19 +1028,69 @@
         document.addEventListener('keypress', swallowIfEditing, true);
         document.addEventListener('keyup', swallowIfEditing, true);
 
-        function sync() {
-            highlight.innerHTML = renderHighlight(editor.value);
+        function syncBasic() {
+            basicHighlight.innerHTML = renderHighlight(basicEditor.value);
             // Keep scroll positions aligned.
-            highlight.scrollTop = editor.scrollTop;
-            highlight.scrollLeft = editor.scrollLeft;
+            basicHighlight.scrollTop = basicEditor.scrollTop;
+            basicHighlight.scrollLeft = basicEditor.scrollLeft;
         }
 
-        editor.addEventListener('input', sync);
-        editor.addEventListener('scroll', sync);
+        function syncAsm() {
+            asmHighlight.innerHTML = renderAsmHighlight(asmEditor.value);
+            asmHighlight.scrollTop = asmEditor.scrollTop;
+            asmHighlight.scrollLeft = asmEditor.scrollLeft;
+        }
+
+        basicEditor.addEventListener('input', syncBasic);
+        basicEditor.addEventListener('scroll', syncBasic);
+        asmEditor.addEventListener('input', syncAsm);
+        asmEditor.addEventListener('scroll', syncAsm);
+
+        let activeMode = 'basic';
+
+        function setMode(mode) {
+            activeMode = (mode === 'asm') ? 'asm' : 'basic';
+            const layers = document.querySelectorAll('.editor-layer');
+            for (const el of layers) {
+                const m = el.getAttribute('data-mode');
+                if (m === activeMode) el.classList.add('is-active');
+                else el.classList.remove('is-active');
+            }
+            if (activeMode === 'basic') {
+                modeBasicBtn.classList.add('is-active');
+                modeAsmBtn.classList.remove('is-active');
+                modeBasicBtn.setAttribute('aria-selected', 'true');
+                modeAsmBtn.setAttribute('aria-selected', 'false');
+                if (hintEl) hintEl.textContent = 'Type C64 BASIC (with or without line numbers) and click RUN to compile to a tokenized PRG and load it into the emulator.';
+                syncBasic();
+                basicEditor.focus();
+            } else {
+                modeAsmBtn.classList.add('is-active');
+                modeBasicBtn.classList.remove('is-active');
+                modeAsmBtn.setAttribute('aria-selected', 'true');
+                modeBasicBtn.setAttribute('aria-selected', 'false');
+                if (hintEl) hintEl.textContent = 'Type 6502 ASM and click RUN to assemble to a PRG that auto-runs via a BASIC SYS stub.';
+                syncAsm();
+                asmEditor.focus();
+            }
+        }
+
+        modeBasicBtn.addEventListener('click', () => setMode('basic'));
+        modeAsmBtn.addEventListener('click', () => setMode('asm'));
 
         runBtn.addEventListener('click', function() {
             try {
-                const prg = compileBasicV2ToPrg(editor.value);
+                let prg;
+                let name = 'dev.prg';
+                if (activeMode === 'asm') {
+                    const res = compileAsmAutoRunToPrg(asmEditor.value);
+                    prg = res.prg;
+                    name = 'dev-asm.prg';
+                    setStatus(`Assembled ${res.size} bytes @ $${res.entry.toString(16).toUpperCase()}. Loading...`, 'ok');
+                } else {
+                    prg = compileBasicV2ToPrg(basicEditor.value);
+                    setStatus(`Compiled ${prg.length} bytes. Loading...`, 'ok');
+                }
                 const blob = new Blob([prg], { type: 'application/octet-stream' });
                 const url = URL.createObjectURL(blob);
 
@@ -450,8 +1098,7 @@
                     throw new Error('Emulator loader is not available yet');
                 }
 
-                setStatus(`Compiled ${prg.length} bytes. Loading...`, 'ok');
-                loadProgramFromUrl(url, 'dev.prg');
+                loadProgramFromUrl(url, name);
 
                 setTimeout(() => URL.revokeObjectURL(url), 5000);
             } catch (e) {
@@ -465,17 +1112,46 @@
         fetch('src/main.bas')
             .then((r) => (r.ok ? r.text() : Promise.reject(new Error('src/main.bas not found'))))
             .then((t) => {
-                editor.value = t;
-                sync();
+                basicEditor.value = t;
+                syncBasic();
             })
             .catch(() => {
-                editor.value = [
+                basicEditor.value = [
                     '10 PRINT "HELLO FROM DEV.HTML"',
                     '20 FOR I=1 TO 200:NEXT I',
                     '30 GOTO 10'
                 ].join('\n');
-                sync();
+                syncBasic();
             });
+
+        // Load ASM template (prefer src/main.asm if served)
+        fetch('src/main.asm')
+            .then((r) => (r.ok ? r.text() : Promise.reject(new Error('src/main.asm not found'))))
+            .then((t) => {
+                asmEditor.value = t;
+                syncAsm();
+            })
+            .catch(() => {
+                asmEditor.value = [
+                    '; 6502 ASM demo (auto-runs via BASIC SYS stub)',
+                    '; Notes:',
+                    '; - dev.html ASM mode assembles a single contiguous block (no .org/*=).',
+                    '; - Use $D020/$D021 to change border/background.',
+                    '',
+                    '        SEI',
+                    '        LDA #$06',
+                    '        STA $D020',
+                    '        LDA #$00',
+                    '        STA $D021',
+                    '',
+                    'loop:   INC $D020',
+                    '        JMP loop'
+                ].join('\n');
+                syncAsm();
+            });
+
+        // Default mode
+        setMode('basic');
     }
 
     // Wait for DOM

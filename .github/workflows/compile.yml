@@ -38,9 +38,9 @@ jobs:
       - name: Install VICE (petcat)
         run: |
           sudo apt-get update
-          sudo apt-get install -y vice
+          sudo apt-get install -y vice acme
       
-      - name: Compile BASIC to PRG
+      - name: Compile sources to PRG
         run: |
           chmod +x compile.sh
           ./compile.sh
