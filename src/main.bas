@@ -1,39 +1,81 @@
-10 rem initialize sid chip
-15 poke 54296,15:rem volume max
-20 rem startup sound effect
-25 poke 54277,0:poke 54278,240:rem fast attack, full sustain
-30 for fh=1 to 8
-35 for fl=0 to 255 step 16
-40 poke 54272,fl:poke 54273,fh
-45 poke 54276,33:rem sawtooth wave + gate on
-50 for d=1 to 2:next d
-55 next fl
-60 next fh
-65 poke 54276,32:rem gate off
-70 for d=1 to 30:next d
-75 for x=1 to 20
-80 print "welcome to sys-64738.com"
-85 for y=1 to 200
-90 next y
-95 poke 53280, x
-96 poke 646, x+1
-97 rem short beep on color change
-98 poke 54272,100:poke 54273,2
-99 poke 54277,0:poke 54278,240
-100 poke 54276,33:rem sawtooth wave + gate on
-101 for d=1 to 5:next d
-102 poke 54276,32:rem gate off
-105 next x
-110 rem ending sound effect
-115 poke 54277,0:poke 54278,240
-120 for fh=8 to 1 step -1
-125 for fl=255 to 0 step -16
-130 poke 54272,fl:poke 54273,fh
-135 poke 54276,33:rem sawtooth wave + gate on
-140 for d=1 to 2:next d
-145 next fl
-150 next fh
-155 poke 54276,32:rem gate off
-160 print "see you later"
-165 for d=1 to 100:next d
-1000 sys 64738
+100 REM *** GUERRA DE SEÑALES: BREAKOUT URUGUAYO ***
+110 REM POR GROK & LUAR ROJI - CON NOMBRES 2026
+120 REM ---------------------------------------------
+130 PP=17:REM PALETA POS
+140 SM=1024:REM SCREEN MEM
+150 SA=SM+880:REM PALETA BASE (ROW22*40)
+160 DX=1:DY=-1:REM PELOTA DIR (ARRIBA AL START)
+170 X=20:Y=12:REM POS START (ABAJO BLOQUES)
+180 H=0:MS=0:REM PARTIDOS / BAJADAS
+190 REM ---------------------------------------------
+200 REM SETUP PANTALLA
+210 REM ---------------------------------------------
+220 POKE 53280,0:POKE 53281,0:REM NEGRO
+230 PRINT CHR$(147):REM CLEAR
+240 REM SCORES ROW0
+250 PRINT "PARTIDOS:00 BAJADAS:00   ";
+260 REM TITULOS
+270 POKE 646,7:PRINT CHR$(13)TAB(7)"GUERRA DE SE#ALES";
+280 POKE 646,6:PRINT CHR$(13)TAB(11)"BREAKOUT URUGUAYO";
+290 POKE 646,3:PRINT CHR$(13)TAB(4)"1=IZQ 2=DER - RECUPERA EL FUTBOL!";
+300 PRINT CHR$(13)CHR$(13):REM SKIP A ROW6
+310 REM ---------------------------------------------
+320 REM BLOQUES CON NOMBRES DE CANALES/CABLES!
+330 REM ---------------------------------------------
+340 POKE 646,7:PRINT "VTV  CAN10CAN12GOLTVDIRTVFLOW  MONTC";TAB(39):PRINT CHR$(13)
+350 POKE 646,2:PRINT "TENFLCASALAUF  SEÑALBAJADACABLEFUTBL";TAB(39):PRINT CHR$(13)
+360 POKE 646,5:PRINT "PREMIBASKTCARNAGRILLDERECHOS     ";TAB(39):PRINT CHR$(13)
+370 POKE 646,14:PRINT "ANTELSAAD MONTENUEVSCABLETV      ";TAB(39):PRINT CHR$(13)
+380 POKE 646,3:PRINT "DIRCTTENFLPAOCATVCABLFUTU       ";TAB(39):PRINT CHR$(13)
+390 REM ---------------------------------------------
+400 REM LOOP PRINCIPAL
+410 REM ---------------------------------------------
+420 REM PALETA
+430 SP=SA+PP
+440 POKE SP,32:POKE SP+1,98:POKE SP+2,98:POKE SP+3,98:POKE SP+4,98:POKE SP+5,32
+450 REM ---------------------------------------------
+460 REM INPUT
+470 GET K$:K=VAL(K$):PP=PP+(K=1)-(K=2)
+480 IF PP<0 THEN PP=0
+490 IF PP>34 THEN PP=34
+500 REM ---------------------------------------------
+510 REM PELOTA ERASE
+520 POKE SM+X+(Y*40),32
+530 REM MOVE
+540 NX=X+DX:NY=Y+DY
+550 REM SIDES
+560 IF NX<1 THEN NX=1:DX=-DX
+570 IF NX>39 THEN NX=39:DX=-DX
+580 REM TOP (NO BORRA TEXTO!)
+590 IF NY<5 THEN NY=5:DY=-DY
+600 REM BOTTOM MISS?
+610 IF NY>23 THEN MS=MS+1:NX=20:NY=12:DX=1:DY=-1
+620 X=NX:Y=NY
+630 REM ---------------------------------------------
+640 REM COLL BLOQUES ROWS6-10
+650 IF Y<6 OR Y>10 THEN 690
+660 P=PEEK(SM+X+(Y*40))
+670 IF P<>32 THEN POKE SM+X+(Y*40),32:H=H+10:DY=-DY:DX=DX*(2*INT(RND(1)*2)-1)
+680 REM ---------------------------------------------
+690 REM COLL PALETA ROW22
+700 IF Y=22 AND PEEK(SM+X+(22*40))=98 THEN DX=-DX:DY=-DY:H=H+1
+710 REM ---------------------------------------------
+720 POKE SM+X+(Y*40),81:REM BALL
+730 REM ---------------------------------------------
+740 GOSUB 900:REM SCORES
+750 IF MS>10 THEN GOSUB 1000:END
+760 GOTO 420
+770 REM ---------------------------------------------
+780 REM SUB UPDATE SCORES
+790 REM ---------------------------------------------
+900 H1=INT(H/10):H2=H-10*H1
+910 POKE 1024+9,48+H1:POKE 1024+10,48+H2
+920 M1=INT(MS/10):M2=MS-10*M1
+930 POKE 1024+20,48+M1:POKE 1024+21,48+M2
+940 RETURN
+950 REM ---------------------------------------------
+960 REM SUB LOSE
+970 REM ---------------------------------------------
+1000 POKE 646,2:PRINT CHR$(145)"{DOWN*3}¡PERDISTE! MAS BAJADAS QUE PARTIDOS!"
+1010 PRINT "SCORE FINAL: ";H;" PARTIDOS RECUPERADOS"
+1020 END
