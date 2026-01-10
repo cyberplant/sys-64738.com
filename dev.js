@@ -663,6 +663,19 @@
                     continue;
                 }
 
+                if (upHead === '!FILL') {
+                    const args = splitCsvArgs(tail);
+                    if (!args[0]) throw new Error('!fill expects a count');
+                    const count = evalExpr(args[0], symbols, pc);
+                    if (!Number.isFinite(count) || count < 0) throw new Error('!fill count must be >= 0');
+                    // ACME: !fill <count>,<value> (value defaults to 0)
+                    const valueExpr = (args.length >= 2 && args[1]) ? args[1] : '0';
+                    statements.push({ type: 'fill', pc, count: count | 0, valueExpr, lineNo: rec.lineNo, raw: rec.raw, size: count | 0 });
+                    pc += (count | 0);
+                    outputStarted = true;
+                    continue;
+                }
+
                 if (upHead === '.BYTE' || upHead === '!BYTE') {
                     const args = splitCsvArgs(tail);
                     let size = 0;
@@ -730,6 +743,15 @@
                     out.fill(0x00, write, write + st.size);
                     write += st.size;
                     pc += st.size;
+                    continue;
+                }
+                if (st.type === 'fill') {
+                    if (st.pc !== pc) throw new Error('Internal assembler error: PC mismatch (fill)');
+                    const count = st.count | 0;
+                    const v = evalExpr(st.valueExpr, symbols, pc) & 0xFF;
+                    out.fill(v, write, write + count);
+                    write += count;
+                    pc += count;
                     continue;
                 }
                 if (st.type === 'data') {
@@ -986,7 +1008,7 @@
     // --- ASM syntax highlighting (simple, not a full parser) ---
 
     const ASM_MNEMONICS = new Set(Object.keys(OPCODES));
-    const ASM_DIRECTIVES = new Set(['.BYTE', '.WORD', '.TEXT', '.ASCII', '.ORG', '*=']);
+    const ASM_DIRECTIVES = new Set(['.BYTE', '.WORD', '.TEXT', '.ASCII', '.ORG', '*=', '!FILL']);
 
     function highlightAsmLine(line) {
         const raw = String(line || '');
@@ -1012,7 +1034,7 @@
             out += escapeHtml(pre);
             if (ASM_MNEMONICS.has(up)) {
                 out += `<span class="asm-op">${escapeHtml(w)}</span>`;
-            } else if (ASM_DIRECTIVES.has(up) || up === '!BYTE' || up === '!WORD' || up === '!TEXT') {
+            } else if (ASM_DIRECTIVES.has(up) || up === '!BYTE' || up === '!WORD' || up === '!TEXT' || up === '!FILL') {
                 out += `<span class="asm-dir">${escapeHtml(w)}</span>`;
             } else {
                 out += escapeHtml(w);
