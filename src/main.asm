@@ -31,7 +31,8 @@ NOTE_IDX  = $C8     ; Índice para nota del himno
 HIT_TEMP  = $C9
 FRAME_TIMER = $CA   ; Contador de frames para timing
 NOTE_TIMER = $CB    ; Contador de frames para duración de nota actual
-BLOCKS    = $CC     ; $CC to $F3 = 40 bytes (1= bloque vivo)
+FRAME_SKIP = $CD    ; Frame skip counter (update game every N frames)
+BLOCKS    = $CE     ; $CE to $F5 = 40 bytes (1= bloque vivo) - moved after new variable
 
 * = $0801
         !byte $0C,$08,$0A,$00,$9E,$38,$31,$39,$32,$00,$00,$00  ; SYS 8192
@@ -87,22 +88,11 @@ start:
 
 main_loop:
         ; The IRQ handler does all the game updates, so we just wait here
-        ; Keep a counter to show we're still in the main loop (for debugging)
-        inc SCREEN+40*0+2       ; Increment third character on screen
-        lda SCREEN+40*0+2
-        cmp #58                 ; Wrap around after '9' (screen code 58)
-        bcc .no_wrap
-        lda #48                 ; Reset to '0' (screen code 48)
-        sta SCREEN+40*0+2
-.no_wrap:
-        
-        ; Read keys (can be done in main loop or IRQ)
-        jsr read_keys
-        
         ; Simple delay to prevent tight loop (reduces CPU usage)
         ; IRQ will fire ~50-60 times per second for game updates
-        ldx #10                 ; Shorter delay since IRQ handles timing
+        ldx #20                 ; Medium delay
 delay_loop:
+        nop
         nop
         nop
         dex
@@ -248,6 +238,7 @@ clear_loop:
         sta NOTE_IDX
         sta FRAME_TIMER
         sta NOTE_TIMER
+        sta FRAME_SKIP
         rts
 
 init_blocks:
@@ -288,13 +279,13 @@ init_game:
         rts
 
 read_keys:
-        ; Read port B of CIA1 (joystick port 2)
-        ; Bit 4 = Left, Bit 5 = Right
-        lda CIA1
-        and #%00010000         ; Check left
+        ; Read joystick port 2 ($DC01 - CIA1 Port B)
+        ; Bit 4 = Left (0 = pressed), Bit 5 = Right (0 = pressed)
+        lda $DC01               ; CIA1 Port B (joystick port 2)
+        and #%00010000          ; Check bit 4 (left)
         beq .izquierda
-        lda CIA1
-        and #%00100000         ; Check right
+        lda $DC01               ; Read again for right
+        and #%00100000          ; Check bit 5 (right)
         beq .derecha
         rts
 
@@ -560,53 +551,61 @@ play_himno_frame:
         rts
         
 .advance_note:
-        ; Release gate from previous note first
+        ; Release gate from previous note first (important!)
         lda SID+4
-        and #%11111110          ; Clear gate bit
+        and #%11111110          ; Clear gate bit (stop current note)
         sta SID+4
         
-        ; Small delay to let note release
-        ldx #2
+        ; Wait a bit for note to release (don't skip this!)
+        ldx #10                 ; Longer delay to ensure note releases
 .release_delay:
         dex
         bne .release_delay
         
         ; Get next note - check bounds first
         ldx NOTE_IDX
-        cpx #9                  ; Max index (array has 9 bytes, last is 0 terminator)
+        cpx #9                  ; Max index (array has 9 bytes)
         bcs .reset_himno        ; If >= 9, reset
         lda himno_low,x
         beq .reset_himno        ; If 0, end of melody, reset
         
-        ; Set frequency
-        sta SID+0
+        ; Set frequency (voice 1 - we use voice 1, not voice 0, to avoid conflicts)
+        sta SID+0               ; Frequency low byte
         lda himno_high,x
-        sta SID+1
+        sta SID+1               ; Frequency high byte
         
-        ; Set ADSR envelope
-        lda #$00                ; Attack = 0 (fast)
+        ; Set ADSR envelope for better sound
+        lda #$00                ; Attack = 0 (instant)
         sta SID+5
-        lda #$F0                ; Decay/Sustain = F0
+        lda #$40                ; Decay = 4, Sustain = 0 (medium decay, no sustain)
         sta SID+6
         
         ; Start note with triangle waveform + gate
-        lda #17                 ; %00010001 = Triangle + gate on
-        sta SID+4
+        lda #17                 ; %00010001 = Triangle waveform + gate bit
+        sta SID+4               ; Control register
         
-        ; Set note duration (frames to hold this note)
-        lda #60                 ; ~1 second at 50Hz PAL / 60Hz NTSC
+        ; Set note duration (longer for proper timing)
+        ; At 50Hz PAL / ~60Hz NTSC, this gives ~2-3 seconds per note
+        lda #120                ; Much longer duration to prevent UFO sound
         sta NOTE_TIMER
         
         inc NOTE_IDX
         rts
         
 .reset_himno:
-        ; Release gate before resetting
+        ; Release gate before resetting to start of melody
         lda SID+4
-        and #%11111110
+        and #%11111110          ; Clear gate bit
         sta SID+4
+        ; Wait a moment
+        ldx #10
+.reset_delay:
+        dex
+        bne .reset_delay
+        ; Reset to start of melody
         lda #0
         sta NOTE_IDX
+        sta NOTE_TIMER          ; Start first note immediately
         rts
 
 init_irq:
@@ -665,20 +664,31 @@ irq_handler:
         lda #$01
         sta $d019
         
+        ; Read keys FIRST (before game updates) so input is responsive
+        jsr read_keys
+        
         ; Visual indicator: show IRQ is firing (put 'I' at position 3)
         lda #9                  ; Screen code for 'I'
         sta SCREEN+40*0+3
         lda #1                  ; White color
         sta COLORRAM+40*0+3
         
+        ; Only update game logic every few frames to prevent crashes
+        ; IRQ fires at 50-60Hz, but we only need game updates at ~30Hz
+        inc FRAME_SKIP
+        lda FRAME_SKIP
+        and #%00000001          ; Update every 2nd frame (30Hz updates)
+        bne .skip_game_update
+        
         ; Update game logic once per frame
-        ; Start with safe routines first
-        jsr move_paddle         ; Actualiza paddle
+        ; Order matters - update position before checking collisions
+        jsr move_paddle         ; Actualiza paddle (read from keys done above)
         jsr move_ball           ; Actualiza pelota
         jsr check_collisions    ; Chequea colisiones
         jsr update_scores       ; Actualiza puntuación
         
-        ; Update music (this might be causing issues - enable carefully)
+.skip_game_update:
+        ; Update music every frame (but with longer note duration)
         jsr play_himno_frame    ; Actualiza música (con timing correcto)
         
         ; Update system clock (jiffy timer at $a0-$a2) to keep BASIC/KERNAL happy
