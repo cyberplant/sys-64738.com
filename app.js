@@ -37,7 +37,17 @@ let activeBackend = null;
 const viceState = {
     scriptEl: null,
     running: false,
-    canvas: null
+    canvas: null,
+    lastStart: null,
+    audioUnlockInstalled: false,
+    audioUnlockHandler: null
+};
+
+// VICE.js audio policy:
+// - Start muted (no WebAudio) to avoid buffer overruns before a user gesture.
+// - Show a button that explicitly enables audio and reboots VICE with sound on.
+const viceAudioState = {
+    enabled: false
 };
 
 // Initialize when the page loads (jQuery is used by the debug UI + legacy JSC64 path)
@@ -163,6 +173,127 @@ function audioDetected() {
         (typeof webkitAudioContext === 'function');
 }
 
+function canEnableViceAudio() {
+    return audioDetected();
+}
+
+function ensureViceAudioOverlay() {
+    if (activeBackend !== EmulatorBackend.VICE) return;
+
+    const container = document.getElementById('emulator-container');
+    if (!container) return;
+
+    let overlay = document.getElementById('vice-audio-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'vice-audio-overlay';
+        overlay.className = 'vice-audio-overlay';
+        overlay.innerHTML = [
+            '<div class="vice-audio-card">',
+            '  <div class="vice-audio-title">Audio is OFF</div>',
+            '  <div class="vice-audio-sub">Press to enable sound</div>',
+            '  <button type="button" id="vice-audio-enable-btn" class="btn vice-audio-btn">Turn audio ON</button>',
+            '</div>'
+        ].join('\n');
+        container.appendChild(overlay);
+
+        const btn = document.getElementById('vice-audio-enable-btn');
+        if (btn) {
+            btn.addEventListener('click', function() {
+                requestEnableViceAudio();
+            });
+        }
+    }
+
+    // Update visibility/message based on current state/support.
+    if (viceAudioState.enabled) {
+        overlay.style.display = 'none';
+        return;
+    }
+
+    if (!canEnableViceAudio()) {
+        overlay.style.display = '';
+        overlay.classList.add('is-disabled');
+        const title = overlay.querySelector('.vice-audio-title');
+        const sub = overlay.querySelector('.vice-audio-sub');
+        const btn = overlay.querySelector('#vice-audio-enable-btn');
+        if (title) title.textContent = 'Audio unavailable';
+        if (sub) sub.textContent = 'Your browser does not support WebAudio.';
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Audio not supported';
+        }
+        return;
+    }
+
+    overlay.style.display = '';
+    overlay.classList.remove('is-disabled');
+    const title = overlay.querySelector('.vice-audio-title');
+    const sub = overlay.querySelector('.vice-audio-sub');
+    const btn = overlay.querySelector('#vice-audio-enable-btn');
+    if (title) title.textContent = 'Audio is OFF';
+    if (sub) sub.textContent = 'Press to enable sound';
+    if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Turn audio ON';
+    }
+}
+
+function primeViceAudioContextForGesture() {
+    // Create/resume AudioContext within a user gesture, so VICE.js can use it later
+    // without hitting autoplay restrictions.
+    try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        window.SDL = window.SDL || {};
+        if (!window.SDL.audioContext) {
+            window.SDL.audioContext = new AC();
+        }
+        const ctx = window.SDL.audioContext;
+        if (ctx && typeof ctx.resume === 'function' && ctx.state === 'suspended') {
+            // Best-effort; some browsers still gate resume.
+            ctx.resume().catch(() => {});
+        }
+    } catch (_) {
+        // ignore
+    }
+}
+
+function requestEnableViceAudio() {
+    if (viceAudioState.enabled) return;
+    if (!canEnableViceAudio()) return;
+
+    // Must be called from a user gesture (button click).
+    primeViceAudioContextForGesture();
+    viceAudioState.enabled = true;
+
+    // Update UI promptly.
+    try {
+        const overlay = document.getElementById('vice-audio-overlay');
+        if (overlay) {
+            const btn = overlay.querySelector('#vice-audio-enable-btn');
+            const sub = overlay.querySelector('.vice-audio-sub');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Enabling...';
+            }
+            if (sub) sub.textContent = 'Restarting emulator with sound...';
+        }
+    } catch (_) {
+        // ignore
+    }
+
+    // Reboot VICE with sound enabled (fresh args). Preserve the last loaded program.
+    if (activeBackend === EmulatorBackend.VICE) {
+        const last = viceState.lastStart || {};
+        startVICE({
+            programName: last.programName,
+            programUrl: last.programUrl,
+            programBytes: last.programBytes
+        });
+    }
+}
+
 function initVICEAuto() {
     // Create a canvas and boot VICE.js, auto-starting programs/main.prg if present.
     console.log('C64 Emulator initializing (VICE.js)');
@@ -250,9 +381,13 @@ function loadViceRuntime() {
 }
 
 function buildViceArguments(programName) {
-    const audioArgs = audioDetected()
-        ? ['-soundsync', '0', '-soundrate', '22050', '-soundfragsize', '2']
-        : ['-sound'];
+    // Start muted by default. Only enable sound after the user explicitly requests it.
+    // NOTE: VICE uses "+sound" to disable sound and "-sound" to enable sound.
+    // If sound is enabled but WebAudio is still gesture-blocked, VICE can overrun its
+    // internal buffers. We avoid that by starting with sound explicitly OFF.
+    const audioArgs = (viceAudioState.enabled && audioDetected())
+        ? ['-sound', '-soundsync', '0', '-soundrate', '22050', '-soundfragsize', '2']
+        : ['+sound'];
 
     // VICE autostart works for PRG/D64 etc.
     if (!programName) {
@@ -262,9 +397,13 @@ function buildViceArguments(programName) {
 }
 
 function startVICE({ programName, programUrl, programBytes }) {
+    // Remember what we last booted so we can reboot with audio enabled.
+    viceState.lastStart = { programName, programUrl, programBytes };
+
     teardownVICE();
 
     const canvas = ensureVICECanvas();
+    ensureViceAudioOverlay();
     const viceArgs = buildViceArguments(programName);
 
     function loadFiles() {
@@ -323,7 +462,11 @@ function startVICE({ programName, programUrl, programBytes }) {
             viceState.running = true;
             console.log('C64 Emulator initialized (VICE.js)');
             setProgramInfo('Emulator ready (VICE.js).', '#00cc00');
-            installViceAudioUnlock();
+            // Only install auto-resume after the user has opted in to sound.
+            if (viceAudioState.enabled) {
+                installViceAudioUnlock();
+            }
+            ensureViceAudioOverlay();
             // Apply scaling once the canvas exists.
             setTimeout(scaleCanvas, 50);
         }
@@ -338,6 +481,7 @@ function startVICE({ programName, programUrl, programBytes }) {
 }
 
 function resumeViceAudio() {
+    if (!viceAudioState.enabled) return;
     // VICE.js (Emscripten SDL) stores the WebAudio context at SDL.audioContext.
     const ctx = (typeof window.SDL !== 'undefined' && window.SDL && window.SDL.audioContext)
         ? window.SDL.audioContext
@@ -357,14 +501,16 @@ function resumeViceAudio() {
 }
 
 function installViceAudioUnlock() {
-    // Browsers require a user gesture before AudioContext can start.
-    // We can't bypass that, but we *can* automatically resume on the first interaction.
-    const handler = () => resumeViceAudio();
+    if (viceState.audioUnlockInstalled) return;
+    viceState.audioUnlockInstalled = true;
+
+    // After audio is enabled, keep it resilient to tab focus changes, etc.
+    viceState.audioUnlockHandler = () => resumeViceAudio();
 
     // Capture phase to run ASAP on the gesture.
-    document.addEventListener('pointerdown', handler, { capture: true, passive: true });
-    document.addEventListener('touchstart', handler, { capture: true, passive: true });
-    document.addEventListener('keydown', handler, { capture: true, passive: true });
+    document.addEventListener('pointerdown', viceState.audioUnlockHandler, { capture: true, passive: true });
+    document.addEventListener('touchstart', viceState.audioUnlockHandler, { capture: true, passive: true });
+    document.addEventListener('keydown', viceState.audioUnlockHandler, { capture: true, passive: true });
 }
 
 function autoLoadProgram() {
