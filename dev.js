@@ -504,7 +504,13 @@
     function detectAddrMode(mnemonic, operandRaw, symbols, pc, pass) {
         const op = (operandRaw || '').trim();
         const upper = mnemonic.toUpperCase();
-        if (!op) return { mode: 'imp' };
+        if (!op) {
+            // Many assemblers allow bare shifts/rotates as accumulator mode (e.g. "LSR" == "LSR A")
+            if (upper === 'ASL' || upper === 'LSR' || upper === 'ROL' || upper === 'ROR') {
+                return { mode: 'acc' };
+            }
+            return { mode: 'imp' };
+        }
         if (op.toUpperCase() === 'A') return { mode: 'acc' };
         if (BRANCH_MNEMONICS.has(upper)) return { mode: 'rel', expr: op };
         if (op.startsWith('#')) return { mode: 'imm', expr: op.slice(1).trim() };
