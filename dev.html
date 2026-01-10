@@ -27,6 +27,8 @@
 
         <div class="editor-wrap">
             <div class="editor-layer is-active" data-mode="basic">
+                <div class="editor-error-line" id="basic-error-line" aria-hidden="true"></div>
+                <pre id="basic-gutter" class="editor-gutter" aria-hidden="true"></pre>
                 <pre id="basic-highlight" class="basic-highlight" aria-hidden="true"></pre>
                 <textarea id="basic-editor"
                     spellcheck="false"
@@ -38,6 +40,8 @@
             </div>
 
             <div class="editor-layer" data-mode="asm">
+                <div class="editor-error-line" id="asm-error-line" aria-hidden="true"></div>
+                <pre id="asm-gutter" class="editor-gutter" aria-hidden="true"></pre>
                 <pre id="asm-highlight" class="asm-highlight" aria-hidden="true"></pre>
                 <textarea id="asm-editor"
                     spellcheck="false"

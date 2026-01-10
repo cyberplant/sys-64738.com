@@ -125,6 +125,8 @@ body.dev-page #emulator-container {
     flex: 1;
     min-height: 0; /* allow flex child to shrink */
     padding: 12px;
+    --editor-inset: 12px;
+    --gutter-w: 52px;
 }
 
 .editor-layer {
@@ -148,7 +150,10 @@ body.dev-page #emulator-container {
 
 .basic-highlight {
     position: absolute;
-    inset: 12px;
+    top: var(--editor-inset);
+    right: var(--editor-inset);
+    bottom: var(--editor-inset);
+    left: calc(var(--editor-inset) + var(--gutter-w));
     margin: 0;
     padding: 12px;
     border: 1px solid rgba(0, 255, 0, 0.65);
@@ -160,7 +165,10 @@ body.dev-page #emulator-container {
 
 #basic-editor {
     position: absolute;
-    inset: 12px;
+    top: var(--editor-inset);
+    right: var(--editor-inset);
+    bottom: var(--editor-inset);
+    left: calc(var(--editor-inset) + var(--gutter-w));
     margin: 0;
     padding: 12px;
     border: 1px solid rgba(0, 255, 0, 0.65);
@@ -183,7 +191,10 @@ body.dev-page #emulator-container {
 
 .asm-highlight {
     position: absolute;
-    inset: 12px;
+    top: var(--editor-inset);
+    right: var(--editor-inset);
+    bottom: var(--editor-inset);
+    left: calc(var(--editor-inset) + var(--gutter-w));
     margin: 0;
     padding: 12px;
     border: 1px solid rgba(0, 255, 0, 0.65);
@@ -195,7 +206,10 @@ body.dev-page #emulator-container {
 
 #asm-editor {
     position: absolute;
-    inset: 12px;
+    top: var(--editor-inset);
+    right: var(--editor-inset);
+    bottom: var(--editor-inset);
+    left: calc(var(--editor-inset) + var(--gutter-w));
     margin: 0;
     padding: 12px;
     border: 1px solid rgba(0, 255, 0, 0.65);
@@ -212,6 +226,48 @@ body.dev-page #emulator-container {
     border-top: 2px solid #00ff00;
     color: rgba(0, 255, 0, 0.75);
     font-size: 12px;
+}
+
+.editor-gutter {
+    position: absolute;
+    top: var(--editor-inset);
+    bottom: var(--editor-inset);
+    left: var(--editor-inset);
+    width: var(--gutter-w);
+    margin: 0;
+    padding: 12px 8px 12px 12px;
+    border: 1px solid rgba(0, 255, 0, 0.35);
+    border-right: none;
+    overflow: auto;
+    color: rgba(0, 255, 0, 0.6);
+    background: rgba(0, 0, 0, 0.2);
+    text-align: right;
+    user-select: none;
+    pointer-events: none;
+    white-space: pre;
+}
+
+.editor-gutter {
+    scrollbar-width: none;
+}
+.editor-gutter::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+}
+
+.editor-error-line {
+    position: absolute;
+    left: calc(var(--editor-inset) + var(--gutter-w));
+    right: var(--editor-inset);
+    height: calc(1.4em);
+    top: var(--editor-inset);
+    background: rgba(255, 85, 85, 0.15);
+    border: 1px solid rgba(255, 85, 85, 0.25);
+    border-left: none;
+    border-right: none;
+    pointer-events: none;
+    display: none;
+    z-index: 1;
 }
 
 /* BASIC highlight colors */
