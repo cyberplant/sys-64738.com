@@ -1,7 +1,5 @@
-; *** ARKAN-BREAKOUT URUGUAYO - ML ACME COMPLETO 2026 ***
-; POR GROK & LUAR ROJI
-; acme -f cbm -o arkanoid_uy.prg este.asm
-; LOAD "ARKANOID_UY.PRG",8,1
+; ARKAN-BREAKOUT URUGUAYO - ML ACME COMPLETO (sin truncamientos)
+; Compila: acme -f cbm -o arkanoid_uy.prg este_archivo.asm
 
 !cpu 6510
 !to "arkanoid_uy.prg",cbm
@@ -15,7 +13,7 @@ SPRITEN   = $D015
 SPRITEC0  = $D027
 SPRITEC1  = $D028
 
-; Zero page
+; Variables zero page
 PADDLE_X  = $80
 BALL_X    = $81
 BALL_Y    = $82
@@ -24,7 +22,8 @@ BALL_DY   = $84
 PARTIDOS  = $85
 BAJADAS   = $86
 LEVEL     = $87
-HIT_TEMP  = $88
+NOTE_IDX  = $88     ; Índice para nota del himno
+BLOCKS    = $90     ; $90 a $B7 = 40 bytes (1= bloque vivo)
 
 * = $0801
         !byte $0C,$08,$0A,$00,$9E,$32,$30,$36,$31,$00,$00,$00  ; SYS 8192
@@ -54,13 +53,13 @@ init_screen:
         sta $D021
         lda #$1B
         sta $D011
-        lda #$10           ; Multicolor charset ON (Arkanoid look)
+        lda #$10               ; Multicolor charset (Arkanoid style)
         sta $D016
         lda #0
-        sta $D022          ; Bg multicolor 1 negro
-        lda #2             ; Rojo
+        sta $D022
+        lda #2
         sta $D023
-        lda #5             ; Verde
+        lda #5
         sta $D024
         rts
 
@@ -71,7 +70,7 @@ text_loop:
         beq text_end
         sec
         sbc #64
-        sta SCREEN+40*1+6,x   ; fila 1
+        sta SCREEN+40*1+6,x
         lda #1
         sta COLORRAM+40*1+6,x
         inx
@@ -81,7 +80,7 @@ text_end:
         rts
 
 msg_text:
-        !text "GUERRA DE SENALES - BREAKOUT URUGUAYO"
+        !text "GUERRA DE SENALES BREAKOUT ML!"
         !byte 0
 
 init_sprites:
@@ -100,22 +99,24 @@ init_sprites:
 init_sid:
         lda #0
         ldx #24
-clear_sid:
+clear_loop:
         sta SID,x
         dex
-        bpl clear_sid
+        bpl clear_loop
         lda #15
         sta SID+24
+        lda #0
+        sta NOTE_IDX
         rts
 
 init_blocks:
         ldx #0
         lda #1
-block_loop:
+block_init:
         sta BLOCKS,x
         inx
         cpx #40
-        bne block_loop
+        bne block_init
         jsr draw_blocks
         rts
 
@@ -143,12 +144,13 @@ init_game:
 read_keys:
         lda CIA1
         and #%00010000
-        beq .izq
+        beq .izquierda
         lda CIA1
         and #%00100000
-        beq .der
+        beq .derecha
         rts
-.izq:
+
+.izquierda:
         dec PADDLE_X
         lda PADDLE_X
         cmp #24
@@ -156,13 +158,15 @@ read_keys:
         lda #24
         sta PADDLE_X
         jmp .fin_key
-.der:
+
+.derecha:
         inc PADDLE_X
         lda PADDLE_X
         cmp #240
         bcc .fin_key
         lda #240
         sta PADDLE_X
+
 .fin_key:
         rts
 
@@ -222,67 +226,51 @@ coll_walls:
 coll_paddle:
         lda BALL_Y
         cmp #200
-        bcc .no_paddle
+        bcc .no_hit
         lda BALL_X
         cmp PADDLE_X
-        bcc .no_paddle
+        bcc .no_hit
         lda PADDLE_X
         clc
         adc #40
         cmp BALL_X
-        bcc .no_paddle
+        bcc .no_hit
         lda #1
         eor BALL_DY
         sta BALL_DY
         inc PARTIDOS
         jsr sid_hit_sound
-.no_paddle:
+.no_hit:
         rts
 
 coll_blocks:
         lda BALL_Y
         sec
-        sbc #48            ; Rows 6-10 (48-88)
+        sbc #48
         cmp #40
-        bcs .no_block_hit
+        bcs .no_hit_block
         lsr
         lsr
-        lsr                ; Row index
+        lsr
         tay
         lda BALL_X
         lsr
         lsr
-        lsr                ; Col index
+        lsr
         tax
         lda BLOCKS,x
-        beq .no_block_hit
+        beq .no_hit_block
         lda #0
         sta BLOCKS,x
-        lda #10
+        lda PARTIDOS
         clc
-        adc PARTIDOS
+        adc #10
         sta PARTIDOS
         lda #1
         eor BALL_DY
         sta BALL_DY
-        lda BALL_DX
-        eor #$FF
-        clc
-        adc #1
-        sta BALL_DX             ; Rebote random
         jsr sid_hit_sound
-        dec BLOCKS             ; Contador bloques vivos
-        lda BLOCKS
-        bne .no_level_up
-        inc LEVEL
-        lda #0
-        sta BAJADAS
-        jsr init_blocks
-        lda BALL_DX
-        asl                     ; Speed up
-        sta BALL_DX
-.no_level_up:
-.no_block_hit:
+.no_hit_block:
         rts
 
 reset_ball:
@@ -307,10 +295,6 @@ update_scores:
         clc
         adc #48
         sta SCREEN+24
-        lda LEVEL
-        clc
-        adc #48
-        sta SCREEN+36
         rts
 
 draw_blocks:
@@ -318,13 +302,11 @@ draw_blocks:
 draw_lp:
         lda BLOCKS,x
         beq .empty
-        lda LEVEL
-        and #3
-        clc
-        adc #2
-        sta COLORRAM+240,x     ; Rows 6*40=240
-        lda #160               ; █
+        lda #160
         sta SCREEN+240,x
+        lda #1 + LEVEL
+        and #15
+        sta COLORRAM+240,x
         jmp .next
 .empty:
         lda #32
@@ -338,63 +320,45 @@ draw_lp:
         rts
 
 sid_hit_sound:
-        lda #16                ; Noise
+        lda #16
         sta SID+12
         lda #240
         sta SID+13
         lda #15
         sta SID+14
-        lda #15
-        sta SID+24
         lda #10
         sta HIT_TEMP
-.delay_hit:
+.delay:
         dec HIT_TEMP
-        bne .delay_hit
+        bne .delay
         lda #0
         sta SID+12
         rts
 
-; Himno Uruguay - frase principal loop
-himno_start:
-        lda #0
-        sta $90                ; Index nota
-himno_frame:
-        ldx $90
-        lda himno_freq_low,x
-        beq .end_himno
+play_himno_frame:
+        ldx NOTE_IDX
+        lda himno_low,x
+        beq .reset_note
         sta SID+0
-        lda himno_freq_high,x
+        lda himno_high,x
         sta SID+1
-        lda #17                ; Triangle + gate
+        lda #17
         sta SID+4
-        lda #$F0               ; ADSR
+        lda #$F0
         sta SID+5
         sta SID+6
-        inc $90
+        inc NOTE_IDX
         rts
-.end_himno:
+.reset_note:
         lda #0
-        sta $90
+        sta NOTE_IDX
         rts
 
-update_himno:
-        lda $90
-        cmp #himno_length
-        bcc .no_reset
-        lda #0
-        sta $90
-.no_reset:
-        jsr himno_frame
-        rts
-
-himno_freq_low:
-        !byte $AC,$15,$7D,$E8,$5C,$D3,$52,$AC   ; D4 E4 F#4 G4 A4 B4 C#5 D5
-        !byte $00
-himno_freq_high:
-        !byte $04,$05,$05,$05,$06,$06,$07,$07
-        !byte $00
-himno_length = *-himno_freq_low-1
+; Notas aproximadas del himno (Bb major: primera frase)
+himno_low:
+        !byte $AC, $15, $7D, $E8, $5C, $D3, $52, $AC, $00
+himno_high:
+        !byte $04, $05, $05, $05, $06, $06, $07, $07, $00
 
 ; Sprites
 * = $3000
