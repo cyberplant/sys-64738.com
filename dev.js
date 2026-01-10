@@ -539,13 +539,15 @@
         const options = opts || {};
         const forbidOrg = !!options.forbidOrg;
         let pc = (options.origin != null) ? (options.origin | 0) : 0x1000;
-        const startPc = pc;
+        let startPc = pc;
+        let originExplicit = false;
 
         const norm = String(source || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         const rawLines = norm.split('\n');
 
         const statements = [];
         const symbols = Object.create(null);
+        let outputStarted = false;
 
         function defineSymbol(name, value) {
             const key = String(name);
@@ -581,82 +583,118 @@
             const rec = parseLine(rawLines[i], i + 1);
             if (!rec) continue;
 
-            if (rec.kind === 'label') {
-                defineSymbol(rec.name, pc);
-                if (!rec.rest) continue;
-                // treat trailing part as statement
-                rec.kind = 'stmt';
-                rec.text = rec.rest;
-            }
-
-            if (rec.kind === 'equ') {
-                const v = evalExpr(rec.expr, symbols, pc);
-                defineSymbol(rec.name, v);
-                continue;
-            }
-
-            // Directives / instructions
-            const text = rec.text;
-            const m = text.match(/^([.A-Za-z][A-Za-z0-9_.]*)\s*(.*)$/);
-            if (!m) throw new Error(`ASM parse error on line ${rec.lineNo}`);
-            const head = m[1];
-            const tail = (m[2] || '').trim();
-            const upHead = head.toUpperCase();
-
-            // ORG
-            if (upHead === '.ORG' || head === '*=') {
-                if (forbidOrg) {
-                    throw new Error(`.org/*= is not supported in dev.html ASM mode (line ${rec.lineNo})`);
+            try {
+                if (rec.kind === 'label') {
+                    defineSymbol(rec.name, pc);
+                    if (!rec.rest) continue;
+                    // treat trailing part as statement
+                    rec.kind = 'stmt';
+                    rec.text = rec.rest;
                 }
-                const v = evalExpr(tail, symbols, pc);
-                pc = v & 0xFFFF;
-                statements.push({ type: 'org', pc, lineNo: rec.lineNo, raw: rec.raw });
-                continue;
-            }
 
-            if (upHead === '.BYTE' || upHead === '!BYTE') {
-                const args = splitCsvArgs(tail);
-                let size = 0;
-                for (const a of args) {
-                    if (!a) continue;
-                    if (/^".*"$/.test(a)) size += parseAsmStringLiteral(a).length;
-                    else size += 1;
+                if (rec.kind === 'equ') {
+                    const v = evalExpr(rec.expr, symbols, pc);
+                    defineSymbol(rec.name, v);
+                    continue;
                 }
-                statements.push({ type: 'data', kind: 'byte', pc, args, lineNo: rec.lineNo, raw: rec.raw, size });
-                pc += size;
-                continue;
-            }
-            if (upHead === '.WORD' || upHead === '!WORD') {
-                const args = splitCsvArgs(tail);
-                const size = args.filter(Boolean).length * 2;
-                statements.push({ type: 'data', kind: 'word', pc, args, lineNo: rec.lineNo, raw: rec.raw, size });
-                pc += size;
-                continue;
-            }
-            if (upHead === '.TEXT' || upHead === '.ASCII' || upHead === '!TEXT') {
-                const arg = tail.trim();
-                if (!/^".*"$/.test(arg)) throw new Error(`.text expects a quoted string (line ${rec.lineNo})`);
-                const bytes = parseAsmStringLiteral(arg);
-                statements.push({ type: 'data', kind: 'text', pc, bytes, lineNo: rec.lineNo, raw: rec.raw, size: bytes.length });
-                pc += bytes.length;
-                continue;
-            }
 
-            // Instruction
-            const mnemonic = upHead;
-            const operandRaw = tail;
-            if (!Object.prototype.hasOwnProperty.call(OPCODES, mnemonic)) {
-                throw new Error(`Unknown mnemonic/directive '${head}' on line ${rec.lineNo}`);
+                // ORG forms: "* = expr" / "*=expr"
+                const orgMatch = rec.text.match(/^\*\s*=\s*(.+)$/);
+                if (orgMatch) {
+                    if (forbidOrg) {
+                        throw new Error('.org/*= is not supported in dev.html ASM mode');
+                    }
+                    const v = evalExpr(orgMatch[1], symbols, pc) & 0xFFFF;
+                    originExplicit = true;
+                    if (!outputStarted) {
+                        pc = v;
+                        startPc = v;
+                        continue;
+                    }
+                    if (v !== pc) {
+                        throw new Error(`.org changed PC from $${pc.toString(16)} to $${v.toString(16)}; gaps are not supported`);
+                    }
+                    continue;
+                }
+
+                // Directives / instructions
+                const text = rec.text;
+                const m = text.match(/^([.A-Za-z][A-Za-z0-9_.]*)\s*(.*)$/);
+                if (!m) throw new Error('ASM parse error');
+                const head = m[1];
+                const tail = (m[2] || '').trim();
+                const upHead = head.toUpperCase();
+
+                // ORG (.org expr)
+                if (upHead === '.ORG') {
+                    if (forbidOrg) {
+                        throw new Error('.org/*= is not supported in dev.html ASM mode');
+                    }
+                    const v = evalExpr(tail, symbols, pc) & 0xFFFF;
+                    originExplicit = true;
+                    if (!outputStarted) {
+                        pc = v;
+                        startPc = v;
+                        continue;
+                    }
+                    if (v !== pc) {
+                        throw new Error(`.org changed PC from $${pc.toString(16)} to $${v.toString(16)}; gaps are not supported`);
+                    }
+                    continue;
+                }
+
+                if (upHead === '.BYTE' || upHead === '!BYTE') {
+                    const args = splitCsvArgs(tail);
+                    let size = 0;
+                    for (const a of args) {
+                        if (!a) continue;
+                        if (/^".*"$/.test(a)) size += parseAsmStringLiteral(a).length;
+                        else size += 1;
+                    }
+                    statements.push({ type: 'data', kind: 'byte', pc, args, lineNo: rec.lineNo, raw: rec.raw, size });
+                    pc += size;
+                    outputStarted = true;
+                    continue;
+                }
+                if (upHead === '.WORD' || upHead === '!WORD') {
+                    const args = splitCsvArgs(tail);
+                    const size = args.filter(Boolean).length * 2;
+                    statements.push({ type: 'data', kind: 'word', pc, args, lineNo: rec.lineNo, raw: rec.raw, size });
+                    pc += size;
+                    outputStarted = true;
+                    continue;
+                }
+                if (upHead === '.TEXT' || upHead === '.ASCII' || upHead === '!TEXT') {
+                    const arg = tail.trim();
+                    if (!/^".*"$/.test(arg)) throw new Error('.text expects a quoted string');
+                    const bytes = parseAsmStringLiteral(arg);
+                    statements.push({ type: 'data', kind: 'text', pc, bytes, lineNo: rec.lineNo, raw: rec.raw, size: bytes.length });
+                    pc += bytes.length;
+                    outputStarted = true;
+                    continue;
+                }
+
+                // Instruction
+                const mnemonic = upHead;
+                const operandRaw = tail;
+                if (!Object.prototype.hasOwnProperty.call(OPCODES, mnemonic)) {
+                    throw new Error(`Unknown mnemonic/directive '${head}'`);
+                }
+                const modeInfo = detectAddrMode(mnemonic, operandRaw, symbols, pc, 1);
+                const mode = modeInfo.mode;
+                const opcode = OPCODES[mnemonic][mode];
+                if (opcode == null) {
+                    throw new Error(`Addressing mode not supported for ${mnemonic} (${mode})`);
+                }
+                const size = (mode === 'imp' || mode === 'acc') ? 1 : (mode === 'imm' || mode === 'zp' || mode === 'zpx' || mode === 'zpy' || mode === 'indx' || mode === 'indy' || mode === 'rel') ? 2 : 3;
+                statements.push({ type: 'ins', pc, mnemonic, mode, operand: modeInfo.expr || null, lineNo: rec.lineNo, raw: rec.raw, size });
+                pc += size;
+                outputStarted = true;
+            } catch (e) {
+                const msg = String(e && e.message ? e.message : e);
+                if (/\bline\s+\d+\b/i.test(msg)) throw e;
+                throw new Error(`Line ${rec.lineNo}: ${msg}`);
             }
-            const modeInfo = detectAddrMode(mnemonic, operandRaw, symbols, pc, 1);
-            const mode = modeInfo.mode;
-            const opcode = OPCODES[mnemonic][mode];
-            if (opcode == null) {
-                throw new Error(`Addressing mode not supported for ${mnemonic} (${mode}) on line ${rec.lineNo}`);
-            }
-            const size = (mode === 'imp' || mode === 'acc') ? 1 : (mode === 'imm' || mode === 'zp' || mode === 'zpx' || mode === 'zpy' || mode === 'indx' || mode === 'indy' || mode === 'rel') ? 2 : 3;
-            statements.push({ type: 'ins', pc, mnemonic, mode, operand: modeInfo.expr || null, lineNo: rec.lineNo, raw: rec.raw, size });
-            pc += size;
         }
 
         const endPc = pc;
@@ -666,88 +704,104 @@
         pc = startPc;
         let write = 0;
         for (const st of statements) {
-            if (st.type === 'org') {
-                // For now we only support contiguous output; .org is allowed only when forbidOrg=false,
-                // but we still keep it simple and disallow gaps in output.
-                if (st.pc !== pc) {
-                    throw new Error(`.org changed PC from $${pc.toString(16)} to $${st.pc.toString(16)}; gaps are not supported`);
-                }
-                continue;
-            }
-            if (st.type === 'data') {
-                if (st.pc !== pc) throw new Error('Internal assembler error: PC mismatch (data)');
-                if (st.kind === 'text') {
-                    out.set(new Uint8Array(st.bytes), write);
-                    write += st.bytes.length;
-                    pc += st.bytes.length;
-                    continue;
-                }
-                if (st.kind === 'byte') {
-                    for (const a of st.args) {
-                        if (!a) continue;
-                        if (/^".*"$/.test(a)) {
-                            const bytes = parseAsmStringLiteral(a);
-                            out.set(new Uint8Array(bytes), write);
-                            write += bytes.length;
-                            pc += bytes.length;
-                        } else {
-                            const v = evalExpr(a, symbols, pc) & 0xFF;
-                            out[write++] = v;
-                            pc += 1;
+            try {
+                if (st.type === 'data') {
+                    if (st.pc !== pc) throw new Error('Internal assembler error: PC mismatch (data)');
+                    if (st.kind === 'text') {
+                        out.set(new Uint8Array(st.bytes), write);
+                        write += st.bytes.length;
+                        pc += st.bytes.length;
+                        continue;
+                    }
+                    if (st.kind === 'byte') {
+                        for (const a of st.args) {
+                            if (!a) continue;
+                            if (/^".*"$/.test(a)) {
+                                const bytes = parseAsmStringLiteral(a);
+                                out.set(new Uint8Array(bytes), write);
+                                write += bytes.length;
+                                pc += bytes.length;
+                            } else {
+                                const v = evalExpr(a, symbols, pc) & 0xFF;
+                                out[write++] = v;
+                                pc += 1;
+                            }
                         }
+                        continue;
                     }
-                    continue;
+                    if (st.kind === 'word') {
+                        for (const a of st.args) {
+                            if (!a) continue;
+                            const v = evalExpr(a, symbols, pc) & 0xFFFF;
+                            out[write++] = v & 0xFF;
+                            out[write++] = (v >> 8) & 0xFF;
+                            pc += 2;
+                        }
+                        continue;
+                    }
+                    throw new Error('Internal assembler error: unknown data kind');
                 }
-                if (st.kind === 'word') {
-                    for (const a of st.args) {
-                        if (!a) continue;
-                        const v = evalExpr(a, symbols, pc) & 0xFFFF;
-                        out[write++] = v & 0xFF;
-                        out[write++] = (v >> 8) & 0xFF;
+                if (st.type === 'ins') {
+                    if (st.pc !== pc) throw new Error('Internal assembler error: PC mismatch (ins)');
+                    detectAddrMode(st.mnemonic, st.operand ? (st.mode === 'imm' ? '#' + st.operand : st.operand) : '', symbols, pc, 2);
+                    const mode = st.mode; // keep mode chosen in pass1 (stable sizing)
+                    const opcode = OPCODES[st.mnemonic][mode];
+                    if (opcode == null) throw new Error(`Cannot encode ${st.mnemonic} (${mode})`);
+                    out[write++] = opcode & 0xFF;
+                    if (mode === 'imp' || mode === 'acc') {
+                        pc += 1;
+                        continue;
+                    }
+                    if (mode === 'rel') {
+                        const target = evalExpr(st.operand, symbols, pc) & 0xFFFF;
+                        const nextPc = (pc + 2) & 0xFFFF;
+                        let off = (target - nextPc) | 0;
+                        if (off < -128 || off > 127) {
+                            throw new Error(`Branch out of range (offset ${off})`);
+                        }
+                        out[write++] = off & 0xFF;
                         pc += 2;
+                        continue;
                     }
-                    continue;
-                }
-                throw new Error('Internal assembler error: unknown data kind');
-            }
-            if (st.type === 'ins') {
-                if (st.pc !== pc) throw new Error('Internal assembler error: PC mismatch (ins)');
-                const modeInfo = detectAddrMode(st.mnemonic, st.operand ? (st.mode === 'imm' ? '#' + st.operand : st.operand) : '', symbols, pc, 2);
-                const mode = st.mode; // keep mode chosen in pass1 (stable sizing)
-                const opcode = OPCODES[st.mnemonic][mode];
-                if (opcode == null) throw new Error(`Cannot encode ${st.mnemonic} (${mode})`);
-                out[write++] = opcode & 0xFF;
-                if (mode === 'imp' || mode === 'acc') {
-                    pc += 1;
-                    continue;
-                }
-                if (mode === 'rel') {
-                    const target = evalExpr(st.operand, symbols, pc) & 0xFFFF;
-                    const nextPc = (pc + 2) & 0xFFFF;
-                    let off = (target - nextPc) | 0;
-                    if (off < -128 || off > 127) {
-                        throw new Error(`Branch out of range on line ${st.lineNo} (offset ${off})`);
+                    if (mode === 'imm' || mode === 'zp' || mode === 'zpx' || mode === 'zpy' || mode === 'indx' || mode === 'indy') {
+                        const v = evalExpr(st.operand, symbols, pc) & 0xFF;
+                        out[write++] = v;
+                        pc += 2;
+                        continue;
                     }
-                    out[write++] = off & 0xFF;
-                    pc += 2;
+                    // abs / absx / absy / ind
+                    const v = evalExpr(st.operand, symbols, pc) & 0xFFFF;
+                    out[write++] = v & 0xFF;
+                    out[write++] = (v >> 8) & 0xFF;
+                    pc += 3;
                     continue;
                 }
-                if (mode === 'imm' || mode === 'zp' || mode === 'zpx' || mode === 'zpy' || mode === 'indx' || mode === 'indy') {
-                    const v = evalExpr(st.operand, symbols, pc) & 0xFF;
-                    out[write++] = v;
-                    pc += 2;
-                    continue;
-                }
-                // abs / absx / absy / ind
-                const v = evalExpr(st.operand, symbols, pc) & 0xFFFF;
-                out[write++] = v & 0xFF;
-                out[write++] = (v >> 8) & 0xFF;
-                pc += 3;
-                continue;
+            } catch (e) {
+                const msg = String(e && e.message ? e.message : e);
+                if (/\bline\s+\d+\b/i.test(msg)) throw e;
+                throw new Error(`Line ${st.lineNo}: ${msg}`);
             }
         }
 
-        return { origin: startPc & 0xFFFF, bytes: out, symbols };
+        return { origin: startPc & 0xFFFF, originExplicit, bytes: out, symbols };
+    }
+
+    function compileAsmPokeLoaderToPrg(origin, bytes) {
+        const o = origin & 0xFFFF;
+        const n = bytes.length | 0;
+        if (n <= 0) throw new Error('ASM produced 0 bytes');
+
+        // Keep DATA lines short-ish.
+        const chunkSize = 24;
+        const lines = [];
+        lines.push(`10 O=${o}:FORI=0TO${n - 1}:READA:POKEO+I,A:NEXT:SYSO`);
+        let ln = 20;
+        for (let i = 0; i < n; i += chunkSize) {
+            const chunk = Array.prototype.slice.call(bytes, i, i + chunkSize);
+            lines.push(`${ln} DATA ${chunk.join(',')}`);
+            ln += 10;
+        }
+        return compileBasicV2ToPrg(lines.join('\n'));
     }
 
     function compileAsmAutoRunToPrg(source) {
@@ -763,11 +817,20 @@
             codeStart = nextCodeStart;
         }
 
-        const asm = assemble6502(source, { origin: codeStart, forbidOrg: true });
+        const asm = assemble6502(source, { origin: codeStart, forbidOrg: false });
+
+        // If the user explicitly set origin (e.g. "*=$C000" or ".org $C000"), we can't append code
+        // after the BASIC stub without breaking absolute addressing. In that case, build a BASIC
+        // loader that POKEs the bytes into the requested address, then SYS there.
+        if (asm.originExplicit && asm.origin !== codeStart) {
+            const prg = compileAsmPokeLoaderToPrg(asm.origin, asm.bytes);
+            return { prg, entry: asm.origin, size: asm.bytes.length, loadedVia: 'poke' };
+        }
+
         const finalPrg = new Uint8Array(prgStub.length + asm.bytes.length);
         finalPrg.set(prgStub, 0);
         finalPrg.set(asm.bytes, prgStub.length);
-        return { prg: finalPrg, entry: codeStart, size: asm.bytes.length };
+        return { prg: finalPrg, entry: codeStart, size: asm.bytes.length, loadedVia: 'append' };
     }
 
     // --- Basic syntax highlighting (simple, no external deps) ---
@@ -996,9 +1059,13 @@
 
         const basicEditor = document.getElementById('basic-editor');
         const basicHighlight = document.getElementById('basic-highlight');
+        const basicGutter = document.getElementById('basic-gutter');
+        const basicErrLine = document.getElementById('basic-error-line');
         const asmEditor = document.getElementById('asm-editor');
         const asmHighlight = document.getElementById('asm-highlight');
-        if (!runBtn || !modeBasicBtn || !modeAsmBtn || !basicEditor || !basicHighlight || !asmEditor || !asmHighlight) return;
+        const asmGutter = document.getElementById('asm-gutter');
+        const asmErrLine = document.getElementById('asm-error-line');
+        if (!runBtn || !modeBasicBtn || !modeAsmBtn || !basicEditor || !basicHighlight || !basicGutter || !basicErrLine || !asmEditor || !asmHighlight || !asmGutter || !asmErrLine) return;
 
         // Show build sha (and avoid caching for the build-info fetch).
         (function() {
@@ -1029,17 +1096,89 @@
         document.addEventListener('keypress', swallowIfEditing, true);
         document.addEventListener('keyup', swallowIfEditing, true);
 
+        function getLineCount(text) {
+            return String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').length;
+        }
+
+        function renderGutter(lineCount) {
+            const n = Math.max(1, lineCount | 0);
+            let out = '';
+            for (let i = 1; i <= n; i++) out += i + '\n';
+            return out;
+        }
+
+        function getLineHeightPx(editorEl) {
+            const lh = parseFloat(window.getComputedStyle(editorEl).lineHeight || '');
+            return Number.isFinite(lh) && lh > 0 ? lh : 19.6;
+        }
+
+        function setErrorLineMarker(mode, lineNo) {
+            const isAsm = mode === 'asm';
+            const editor = isAsm ? asmEditor : basicEditor;
+            const marker = isAsm ? asmErrLine : basicErrLine;
+            if (!marker) return;
+            const n = (lineNo | 0);
+            if (!n || n < 1) {
+                marker.style.display = 'none';
+                return;
+            }
+
+            const lineHeight = getLineHeightPx(editor);
+            const paddingTop = 12; // matches CSS padding on textarea/highlight
+            const y = paddingTop + (n - 1) * lineHeight - editor.scrollTop;
+            marker.style.top = `calc(var(--editor-inset) + ${Math.max(0, y)}px)`;
+            marker.style.display = '';
+        }
+
+        function extractLineNumberFromError(err) {
+            const msg = String(err && err.message ? err.message : err);
+            const m = msg.match(/\bline\s+(\d+)\b/i);
+            if (!m) return null;
+            const n = parseInt(m[1], 10);
+            return Number.isFinite(n) ? n : null;
+        }
+
+        function scrollToLine(editorEl, lineNo) {
+            const n = (lineNo | 0);
+            if (!n || n < 1) return;
+            const lh = getLineHeightPx(editorEl);
+            const top = (n - 1) * lh;
+            const target = Math.max(0, top - editorEl.clientHeight * 0.35);
+            editorEl.scrollTop = target;
+        }
+
+        let basicLastGutterLines = 0;
+        let asmLastGutterLines = 0;
+        let basicErrorLine = null;
+        let asmErrorLine = null;
+
         function syncBasic() {
             basicHighlight.innerHTML = renderHighlight(basicEditor.value);
             // Keep scroll positions aligned.
             basicHighlight.scrollTop = basicEditor.scrollTop;
             basicHighlight.scrollLeft = basicEditor.scrollLeft;
+
+            const lc = getLineCount(basicEditor.value);
+            if (lc !== basicLastGutterLines) {
+                basicGutter.textContent = renderGutter(lc);
+                basicLastGutterLines = lc;
+            }
+            basicGutter.scrollTop = basicEditor.scrollTop;
+            setErrorLineMarker('basic', basicErrorLine);
         }
 
         function syncAsm() {
             asmHighlight.innerHTML = renderAsmHighlight(asmEditor.value);
             asmHighlight.scrollTop = asmEditor.scrollTop;
             asmHighlight.scrollLeft = asmEditor.scrollLeft;
+
+            const lc = getLineCount(asmEditor.value);
+            if (lc !== asmLastGutterLines) {
+                asmGutter.textContent = renderGutter(lc);
+                asmLastGutterLines = lc;
+            }
+            asmGutter.scrollTop = asmEditor.scrollTop;
+            setErrorLineMarker('asm', asmErrorLine);
         }
 
         basicEditor.addEventListener('input', syncBasic);
@@ -1081,13 +1220,19 @@
 
         runBtn.addEventListener('click', function() {
             try {
+                basicErrorLine = null;
+                asmErrorLine = null;
+                setErrorLineMarker('basic', null);
+                setErrorLineMarker('asm', null);
+
                 let prg;
                 let name = 'dev.prg';
                 if (activeMode === 'asm') {
                     const res = compileAsmAutoRunToPrg(asmEditor.value);
                     prg = res.prg;
                     name = 'dev-asm.prg';
-                    setStatus(`Assembled ${res.size} bytes @ $${res.entry.toString(16).toUpperCase()}. Loading...`, 'ok');
+                    const how = (res.loadedVia === 'poke') ? 'POKE loader' : 'appended';
+                    setStatus(`Assembled ${res.size} bytes @ $${res.entry.toString(16).toUpperCase()} (${how}). Loading...`, 'ok');
                 } else {
                     prg = compileBasicV2ToPrg(basicEditor.value);
                     setStatus(`Compiled ${prg.length} bytes. Loading...`, 'ok');
@@ -1103,6 +1248,18 @@
 
                 setTimeout(() => URL.revokeObjectURL(url), 5000);
             } catch (e) {
+                const lineNo = extractLineNumberFromError(e);
+                if (lineNo) {
+                    if (activeMode === 'asm') {
+                        asmErrorLine = lineNo;
+                        scrollToLine(asmEditor, lineNo);
+                        syncAsm();
+                    } else {
+                        basicErrorLine = lineNo;
+                        scrollToLine(basicEditor, lineNo);
+                        syncBasic();
+                    }
+                }
                 setStatus(String(e && e.message ? e.message : e), 'err');
                 // eslint-disable-next-line no-console
                 console.error(e);
