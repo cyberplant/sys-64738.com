@@ -321,12 +321,13 @@
     };
 
     function stripAsmComment(line) {
-        // Strip ';' comments, ignoring ';' inside double quotes.
+        // Strip ';' and '//' comments, ignoring them inside double quotes.
         let inStr = false;
         for (let i = 0; i < line.length; i++) {
             const ch = line[i];
             if (ch === '"') inStr = !inStr;
             if (!inStr && ch === ';') return line.slice(0, i);
+            if (!inStr && ch === '/' && line[i + 1] === '/') return line.slice(0, i);
         }
         return line;
     }
