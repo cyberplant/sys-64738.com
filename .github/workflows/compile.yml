@@ -72,8 +72,8 @@ jobs:
           SYS64738_REF_NAME: ${{ github.ref_name }}
         run: |
           chmod +x compile.sh
-          # Use short SHA for filenames
-          export SYS64738_BUILD_SHA="$(echo \"$SYS64738_BUILD_SHA\" | cut -c1-7)"
+          # Use short SHA for filenames (compile.sh also sanitizes, this is just convenience)
+          export SYS64738_BUILD_SHA="${SYS64738_BUILD_SHA:0:7}"
           ./compile.sh
       
       - name: List compiled files

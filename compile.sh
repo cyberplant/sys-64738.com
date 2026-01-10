@@ -131,7 +131,11 @@ if [ ${#prg_files[@]} -gt 0 ]; then
     D64_NAME="programs.d64"
     if [[ -n "${SYS64738_REF_NAME:-}" && "${SYS64738_REF_NAME}" != "main" ]]; then
         if [[ -n "${SYS64738_BUILD_SHA:-}" ]]; then
-            D64_NAME="programs-${SYS64738_BUILD_SHA}.d64"
+            # Defensive: keep only hex chars, and use short sha (7).
+            SAFE_SHA="$(printf '%s' "${SYS64738_BUILD_SHA}" | tr -cd '0-9a-fA-F' | cut -c1-7)"
+            if [[ -n "${SAFE_SHA}" ]]; then
+                D64_NAME="programs-${SAFE_SHA}.d64"
+            fi
         fi
     fi
 

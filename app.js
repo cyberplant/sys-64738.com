@@ -321,8 +321,11 @@ function initVICEAuto() {
                 const sha = (info && info.sha) ? String(info.sha) : cfgSha;
                 const refName = (info && info.refName) ? String(info.refName) : '';
                 if (refName && refName !== 'main' && sha) {
-                    const shortSha = sha.slice(0, 7);
-                    return { diskName: `programs-${shortSha}.d64`, diskUrl: `programs/programs-${shortSha}.d64` };
+                    const shortSha = sha.replace(/[^0-9a-f]/gi, '').slice(0, 7);
+                    if (shortSha) {
+                        return { diskName: `programs-${shortSha}.d64`, diskUrl: `programs/programs-${shortSha}.d64` };
+                    }
+                    return fallback;
                 }
                 return fallback;
             })
