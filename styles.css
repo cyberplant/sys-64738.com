@@ -227,3 +227,59 @@ body.dev-page #emulator-container {
     }
 }
 
+/* VICE.js audio overlay (start muted; user opts in) */
+.vice-audio-overlay {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+    pointer-events: none; /* don't block emulator interaction */
+}
+
+.vice-audio-card {
+    border: 2px solid #00ff00;
+    background: rgba(0, 0, 0, 0.92);
+    padding: 16px 18px;
+    border-radius: 6px;
+    width: min(360px, calc(100vw - 32px));
+    text-align: center;
+    box-shadow: 0 0 16px rgba(0, 255, 0, 0.18);
+    pointer-events: auto;
+}
+
+.vice-audio-title {
+    font-weight: bold;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    color: #00ff00;
+}
+
+.vice-audio-sub {
+    font-size: 13px;
+    color: rgba(0, 255, 0, 0.75);
+    margin-bottom: 12px;
+}
+
+.vice-audio-btn.btn {
+    width: 100%;
+}
+
+.vice-audio-overlay.is-disabled .vice-audio-card {
+    border-color: rgba(0, 255, 0, 0.35);
+    box-shadow: none;
+}
+
+.vice-audio-overlay.is-disabled .vice-audio-title,
+.vice-audio-overlay.is-disabled .vice-audio-sub {
+    color: rgba(0, 255, 0, 0.55);
+}
+
+.vice-audio-overlay.is-disabled .btn {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
