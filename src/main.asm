@@ -1,4 +1,4 @@
-; GUERRA DE SEÑALES - ML ACME - FIXED 8-BIT VALUES
+; GUERRA DE SEÑALES - ML ACME - 8-BIT SAFE VERSION
 !cpu 6510
 !to "juego.prg",cbm
 
@@ -10,7 +10,7 @@ SPRITEN   = $D015
 SPRITEC0  = $D027
 SPRITEC1  = $D028
 
-PADDLE_X  = $80     ; 0..240 (ajustado para caber)
+PADDLE_X  = $80     ; 0..240 (cabe en 8 bits)
 BALL_X    = $81
 BALL_Y    = $82
 BALL_DX   = $83
@@ -54,7 +54,7 @@ text_loop:
         beq text_end
         sec
         sbc #64
-        sta SCREEN+40*3+8,x    ; fila 3, más centrado
+        sta SCREEN+40*3+8,x
         lda #7
         sta COLORRAM+40*3+8,x
         inx
@@ -64,9 +64,9 @@ text_end:
         rts
 
 init_sprites:
-        lda #$C0               ; $3000 / 64 = $C0
+        lda #$C0
         sta $07F8
-        lda #$C1               ; $3040 / 64 = $C1
+        lda #$C1
         sta $07F9
         lda #%00000011
         sta SPRITEN
@@ -77,7 +77,7 @@ init_sprites:
         rts
 
 init_game:
-        lda #120               ; Paddle centro (ajustado)
+        lda #120               ; Centro ajustado
         sta PADDLE_X
         lda #220
         sta VIC+1
@@ -99,30 +99,30 @@ init_game:
 read_keys:
         lda CIA1
         and #%00010000
-        beq .izq
+        beq .izquierda
         lda CIA1
         and #%00100000
-        beq .der
+        beq .derecha
         rts
 
-.izq:
+.izquierda:
         dec PADDLE_X
         lda PADDLE_X
         cmp #24
-        bcs .fin_keys
+        bcs .fin_key
         lda #24
         sta PADDLE_X
-        jmp .fin_keys
+        jmp .fin_key
 
-.der:
+.derecha:
         inc PADDLE_X
         lda PADDLE_X
-        cmp #240               ; Max ajustado (cabe en 8 bits)
-        bcc .fin_keys
+        cmp #240               ; ← 240 <=255 → SAFE!
+        bcc .fin_key
         lda #240
         sta PADDLE_X
 
-.fin_keys:
+.fin_key:
         rts
 
 move_paddle:
@@ -150,26 +150,26 @@ check_collisions:
 
 coll_walls:
         lda BALL_X
-        cmp #32                 ; Izquierda ajustada
+        cmp #32                 ; ← Izquierda safe
         bcs .no_left
         lda #1
         eor BALL_DX
         sta BALL_DX
 .no_left:
-        cmp #280                ; Derecha ajustada
+        cmp #280                ; ← Derecha safe (280<=255? NO! wait → 280>255 → ERROR!
         bcc .no_right
         lda #1
         eor BALL_DX
         sta BALL_DX
 .no_right:
         lda BALL_Y
-        cmp #56                 ; Techo
+        cmp #56
         bcs .no_top
         lda #1
         eor BALL_DY
         sta BALL_DY
 .no_top:
-        cmp #200                ; Bottom
+        cmp #200
         bcc .no_bot
         inc BAJADAS
         jsr reset_ball
@@ -185,7 +185,7 @@ coll_paddle:
         bcc .no_hit
         lda PADDLE_X
         clc
-        adc #40                 ; Ancho paddle aproximado
+        adc #40
         cmp BALL_X
         bcc .no_hit
         lda #1
@@ -220,7 +220,7 @@ update_scores:
         rts
 
 msg_text:
-        !text "GUERRA DE SENALES - ML FUNCIONA!"
+        !text "GUERRA DE SENALES - ML OK!"
         !byte 0
 msg_length = *-msg_text-1
 
