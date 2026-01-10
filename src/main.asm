@@ -24,6 +24,7 @@ BAJADAS   = $86
 LEVEL     = $87
 NOTE_IDX  = $88     ; Índice para nota del himno
 BLOCKS    = $90     ; $90 a $B7 = 40 bytes (1= bloque vivo)
+HIT_TEMP  = $89
 
 * = $0801
         !byte $0C,$08,$0A,$00,$9E,$32,$30,$36,$31,$00,$00,$00  ; SYS 8192
