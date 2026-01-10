@@ -303,15 +303,23 @@ function initVICEAuto() {
 
     setProgramInfo('Starting emulator (VICE.js)...', '#00cc00');
 
+    const disk = {
+        diskName: 'programs.d64',
+        diskUrl: 'programs/programs.d64'
+    };
+
     if (shouldAutoLoadMain()) {
         // Default behavior mirrors the existing JSC64 auto-load behavior.
         startVICE({
             programName: 'main.prg',
-            programUrl: 'programs/main.prg'
+            programUrl: 'programs/main.prg',
+            ...disk
         });
     } else {
         // Boot emulator without autostarting a program (dev.html uses RUN to load programs).
-        startVICE({});
+        startVICE({
+            ...disk
+        });
         setProgramInfo('Emulator ready. Use the editor RUN button to load a program.', '#00cc00');
     }
 }
@@ -380,7 +388,7 @@ function loadViceRuntime() {
     });
 }
 
-function buildViceArguments(programName) {
+function buildViceArguments(programName, diskName) {
     // Start muted by default. Only enable sound after the user explicitly requests it.
     // NOTE: VICE uses "+sound" to disable sound and "-sound" to enable sound.
     // If sound is enabled but WebAudio is still gesture-blocked, VICE can overrun its
@@ -389,60 +397,81 @@ function buildViceArguments(programName) {
         ? ['-sound', '-soundsync', '0', '-soundrate', '22050', '-soundfragsize', '2']
         : ['+sound'];
 
-    // VICE autostart works for PRG/D64 etc.
-    if (!programName) {
-        return audioArgs;
+    // Attach a D64 to drive 8 when available.
+    const args = [];
+    if (diskName) {
+        args.push('-8', diskName);
     }
-    return ['-autostart', programName].concat(audioArgs);
+
+    // VICE autostart works for PRG/D64 etc.
+    if (programName) {
+        args.push('-autostart', programName);
+    }
+    return args.concat(audioArgs);
 }
 
-function startVICE({ programName, programUrl, programBytes }) {
+function startVICE({ programName, programUrl, programBytes, diskName, diskUrl, diskBytes }) {
     // Remember what we last booted so we can reboot with audio enabled.
-    viceState.lastStart = { programName, programUrl, programBytes };
+    viceState.lastStart = { programName, programUrl, programBytes, diskName, diskUrl, diskBytes };
 
     teardownVICE();
 
     const canvas = ensureVICECanvas();
     ensureViceAudioOverlay();
-    const viceArgs = buildViceArguments(programName);
+    const viceArgs = buildViceArguments(programName, diskName);
 
     function loadFiles() {
         if (typeof FS === 'undefined' || !FS.createDataFile) {
             throw new Error('VICE FS is not available');
         }
 
-        if (programBytes) {
-            if (!programName) {
-                throw new Error('Missing programName for programBytes');
-            }
-            FS.createDataFile('/', programName, new Uint8Array(programBytes), true, true);
-            return;
+        function putFile(name, bytes) {
+            FS.createDataFile('/', name, new Uint8Array(bytes), true, true);
         }
 
-        if (programUrl) {
-            if (!programName) {
-                throw new Error('Missing programName for programUrl');
-            }
-            // Block program start until we fetch the file.
-            const depId = `fetch:${programUrl}`;
+        function fetchToFs(url, name, { optional } = {}) {
+            const depId = `fetch:${url}`;
             addRunDependency(depId);
-            fetch(programUrl)
+            fetch(url)
                 .then((response) => {
                     if (!response.ok) {
-                        throw new Error(`Failed to fetch ${programUrl} (${response.status})`);
+                        throw new Error(`Failed to fetch ${url} (${response.status})`);
                     }
                     return response.arrayBuffer();
                 })
                 .then((buf) => {
-                    FS.createDataFile('/', programName, new Uint8Array(buf), true, true);
+                    putFile(name, buf);
                 })
                 .catch((err) => {
-                    console.warn('VICE autoload failed:', err);
-                    setProgramInfo('Auto-load failed (program not found). Use debug.html to load a file, or run ./compile.sh to generate programs/main.prg.', '#ffaa00');
+                    if (!optional) {
+                        console.warn('VICE autoload failed:', err);
+                        setProgramInfo('Auto-load failed (program not found). Use debug.html to load a file, or run ./compile.sh to generate programs/main.prg.', '#ffaa00');
+                    } else {
+                        // optional file (like programs.d64) not found is fine
+                        console.log('VICE optional file not found:', url);
+                    }
                 })
                 .finally(() => {
                     removeRunDependency(depId);
                 });
+        }
+
+        // Disk image (optional)
+        if (diskBytes) {
+            if (!diskName) throw new Error('Missing diskName for diskBytes');
+            putFile(diskName, diskBytes);
+        } else if (diskUrl) {
+            if (!diskName) throw new Error('Missing diskName for diskUrl');
+            fetchToFs(diskUrl, diskName, { optional: true });
+        }
+
+        // Program (optional if you just want an attached disk)
+        if (programBytes) {
+            if (!programName) throw new Error('Missing programName for programBytes');
+            putFile(programName, programBytes);
+        } else if (programUrl) {
+            if (!programName) throw new Error('Missing programName for programUrl');
+            fetchToFs(programUrl, programName, { optional: false });
         }
     }
 

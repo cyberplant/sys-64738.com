@@ -103,7 +103,43 @@ for f in "${asm_files[@]}"; do
     compile_asm "$f"
 done
 
+# Build a single D64 with all compiled PRGs (optional but useful for browsing/loading)
+prg_files=("$OUTPUT_DIR"/*.prg)
+if [ ${#prg_files[@]} -gt 0 ]; then
+    # Ensure c1541 is available (VICE). This may not be installed if we only compiled ASM.
+    if ! command -v c1541 &> /dev/null; then
+        echo "❌ Error: c1541 not found. Installing VICE..."
+        if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            sudo apt-get update
+            sudo apt-get install -y vice
+        elif [[ "$OSTYPE" == "darwin"* ]]; then
+            if command -v brew &> /dev/null; then
+                brew install vice
+            else
+                echo "❌ Error: Homebrew not found. Please install VICE manually."
+                exit 1
+            fi
+        else
+            echo "❌ Error: Unsupported OS. Please install VICE manually."
+            exit 1
+        fi
+    fi
+
+    D64_PATH="$OUTPUT_DIR/programs.d64"
+    echo "💾 Building D64 image: $D64_PATH"
+    rm -f "$D64_PATH"
+
+    # Create disk and then add all PRGs (stable order)
+    c1541 -format "PROGRAMS,00" d64 "$D64_PATH" >/dev/null
+    mapfile -t prg_sorted < <(printf '%s\n' "${prg_files[@]}" | LC_ALL=C sort)
+    for f in "${prg_sorted[@]}"; do
+        base="$(basename "$f")"
+        echo "  + $base"
+        c1541 -attach "$D64_PATH" -write "$f" >/dev/null
+    done
+fi
+
 echo ""
 echo "✅ Compilation finished. Outputs:"
-ls -lh "$OUTPUT_DIR"/*.prg || true
+ls -lh "$OUTPUT_DIR"/*.prg "$OUTPUT_DIR"/*.d64 2>/dev/null || true
 

@@ -611,19 +611,33 @@
                         startPc = v;
                         continue;
                     }
-                    if (v !== pc) {
-                        throw new Error(`.org changed PC from $${pc.toString(16)} to $${v.toString(16)}; gaps are not supported`);
+                    if (v < pc) {
+                        throw new Error(`.org moved backwards from $${pc.toString(16)} to $${v.toString(16)}`);
+                    }
+                    if (v > pc) {
+                        const size = (v - pc) & 0xFFFF;
+                        statements.push({ type: 'pad', pc, size, lineNo: rec.lineNo, raw: rec.raw });
+                        pc = v;
+                        outputStarted = true;
                     }
                     continue;
                 }
 
                 // Directives / instructions
                 const text = rec.text;
-                const m = text.match(/^([.A-Za-z][A-Za-z0-9_.]*)\s*(.*)$/);
+                // Allow ACME-style bang directives (!byte, !text, !cpu, !to, ...)
+                const m = text.match(/^([!.A-Za-z][!A-Za-z0-9_.]*)\s*(.*)$/);
                 if (!m) throw new Error('ASM parse error');
                 const head = m[1];
                 const tail = (m[2] || '').trim();
                 const upHead = head.toUpperCase();
+
+                // ACME-only build directives (no-ops in dev in-browser assembler)
+                if (upHead === '!CPU' || upHead === '!TO') {
+                    // !cpu selects CPU variant; !to selects output file format/name.
+                    // Neither affects in-browser assembly of a single block.
+                    continue;
+                }
 
                 // ORG (.org expr)
                 if (upHead === '.ORG') {
@@ -637,8 +651,14 @@
                         startPc = v;
                         continue;
                     }
-                    if (v !== pc) {
-                        throw new Error(`.org changed PC from $${pc.toString(16)} to $${v.toString(16)}; gaps are not supported`);
+                    if (v < pc) {
+                        throw new Error(`.org moved backwards from $${pc.toString(16)} to $${v.toString(16)}`);
+                    }
+                    if (v > pc) {
+                        const size = (v - pc) & 0xFFFF;
+                        statements.push({ type: 'pad', pc, size, lineNo: rec.lineNo, raw: rec.raw });
+                        pc = v;
+                        outputStarted = true;
                     }
                     continue;
                 }
@@ -705,6 +725,13 @@
         let write = 0;
         for (const st of statements) {
             try {
+                if (st.type === 'pad') {
+                    if (st.pc !== pc) throw new Error('Internal assembler error: PC mismatch (pad)');
+                    out.fill(0x00, write, write + st.size);
+                    write += st.size;
+                    pc += st.size;
+                    continue;
+                }
                 if (st.type === 'data') {
                     if (st.pc !== pc) throw new Error('Internal assembler error: PC mismatch (data)');
                     if (st.kind === 'text') {
@@ -804,6 +831,16 @@
         return compileBasicV2ToPrg(lines.join('\n'));
     }
 
+    function buildPrgFromOriginBytes(origin, bytes) {
+        const o = origin & 0xFFFF;
+        const body = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+        const prg = new Uint8Array(2 + body.length);
+        prg[0] = o & 0xFF;
+        prg[1] = (o >> 8) & 0xFF;
+        prg.set(body, 2);
+        return prg;
+    }
+
     function compileAsmAutoRunToPrg(source) {
         // Build a BASIC stub that does SYS <codeStart>, then append machine code bytes right after it.
         // We iterate because changing the SYS number of digits can change BASIC program length.
@@ -818,6 +855,13 @@
         }
 
         const asm = assemble6502(source, { origin: codeStart, forbidOrg: false });
+
+        // If the source explicitly builds a BASIC-start PRG (common ACME pattern: "*=$0801" + !byte),
+        // just emit that PRG directly. VICE autostart will RUN it.
+        if (asm.originExplicit && asm.origin === 0x0801) {
+            const prg = buildPrgFromOriginBytes(asm.origin, asm.bytes);
+            return { prg, entry: asm.origin, size: asm.bytes.length, loadedVia: 'native' };
+        }
 
         // If the user explicitly set origin (e.g. "*=$C000" or ".org $C000"), we can't append code
         // after the BASIC stub without breaking absolute addressing. In that case, build a BASIC
