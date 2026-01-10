@@ -303,25 +303,51 @@ function initVICEAuto() {
 
     setProgramInfo('Starting emulator (VICE.js)...', '#00cc00');
 
-    const disk = {
-        diskName: 'programs.d64',
-        diskUrl: 'programs/programs.d64'
-    };
+    function resolveDiskInfo() {
+        // Main branch keeps a fixed filename; other branches/PRs use a sha-suffixed filename to avoid caching.
+        const fallback = { diskName: 'programs.d64', diskUrl: 'programs/programs.d64' };
+        const cfgSha = (() => {
+            try {
+                return (window.SYS64738_CONFIG && window.SYS64738_CONFIG.buildSha) ? String(window.SYS64738_CONFIG.buildSha) : '';
+            } catch (_) {
+                return '';
+            }
+        })();
 
-    if (shouldAutoLoadMain()) {
-        // Default behavior mirrors the existing JSC64 auto-load behavior.
-        startVICE({
-            programName: 'main.prg',
-            programUrl: 'programs/main.prg',
-            ...disk
-        });
-    } else {
-        // Boot emulator without autostarting a program (dev.html uses RUN to load programs).
-        startVICE({
-            ...disk
-        });
-        setProgramInfo('Emulator ready. Use the editor RUN button to load a program.', '#00cc00');
+        // Prefer build-info.json (it includes refName when deployed by CI).
+        return fetch(`build-info.json?t=${Date.now()}`, { cache: 'no-store' })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error('build-info.json not found'))))
+            .then((info) => {
+                const sha = (info && info.sha) ? String(info.sha) : cfgSha;
+                const refName = (info && info.refName) ? String(info.refName) : '';
+                if (refName && refName !== 'main' && sha) {
+                    const shortSha = sha.slice(0, 7);
+                    return { diskName: `programs-${shortSha}.d64`, diskUrl: `programs/programs-${shortSha}.d64` };
+                }
+                return fallback;
+            })
+            .catch(() => {
+                // Local dev may not have build-info.json; use the fixed name.
+                return fallback;
+            });
     }
+
+    resolveDiskInfo().then((disk) => {
+        if (shouldAutoLoadMain()) {
+            // Default behavior mirrors the existing JSC64 auto-load behavior.
+            startVICE({
+                programName: 'main.prg',
+                programUrl: 'programs/main.prg',
+                ...disk
+            });
+        } else {
+            // Boot emulator without autostarting a program (dev.html uses RUN to load programs).
+            startVICE({
+                ...disk
+            });
+            setProgramInfo('Emulator ready. Use the editor RUN button to load a program.', '#00cc00');
+        }
+    });
 }
 
 function teardownVICE() {

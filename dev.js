@@ -366,13 +366,8 @@
         while (i < s.length) {
             const ch = s[i];
             if (/\s/.test(ch)) { i++; continue; }
-            if (ch === '(' || ch === ')' || ch === '+' || ch === '-' || ch === '<' || ch === '>' ) {
+            if (ch === '(' || ch === ')' || ch === '+' || ch === '-' || ch === '<' || ch === '>' || ch === '*' || ch === '/') {
                 tokens.push({ t: ch });
-                i++;
-                continue;
-            }
-            if (ch === '*') {
-                tokens.push({ t: 'PC' });
                 i++;
                 continue;
             }
@@ -418,7 +413,7 @@
             const tok = take();
             if (!tok) throw new Error('Unexpected end of expression');
             if (tok.t === 'num') return tok.v | 0;
-            if (tok.t === 'PC') return pc | 0;
+            if (tok.t === '*') return pc | 0;
             if (tok.t === 'id') {
                 const key = tok.v;
                 if (!Object.prototype.hasOwnProperty.call(symbols, key)) {
@@ -448,13 +443,30 @@
             return parsePrimary();
         }
 
-        function parseAddSub() {
+        function parseMulDiv() {
             let v = parseUnary();
+            while (true) {
+                const tok = peek();
+                if (!tok || (tok.t !== '*' && tok.t !== '/')) break;
+                take();
+                const rhs = parseUnary();
+                if (tok.t === '*') {
+                    v = (v * rhs) | 0;
+                } else {
+                    if (rhs === 0) throw new Error('Division by zero');
+                    v = (v / rhs) | 0;
+                }
+            }
+            return v;
+        }
+
+        function parseAddSub() {
+            let v = parseMulDiv();
             while (true) {
                 const tok = peek();
                 if (!tok || (tok.t !== '+' && tok.t !== '-')) break;
                 take();
-                const rhs = parseUnary();
+                const rhs = parseMulDiv();
                 v = (tok.t === '+') ? (v + rhs) : (v - rhs);
             }
             return v;

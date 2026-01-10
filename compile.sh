@@ -125,7 +125,17 @@ if [ ${#prg_files[@]} -gt 0 ]; then
         fi
     fi
 
-    D64_PATH="$OUTPUT_DIR/programs.d64"
+    # D64 name:
+    # - main branch: fixed programs.d64
+    # - other branches/PRs: programs-<sha>.d64 to avoid caching issues
+    D64_NAME="programs.d64"
+    if [[ -n "${SYS64738_REF_NAME:-}" && "${SYS64738_REF_NAME}" != "main" ]]; then
+        if [[ -n "${SYS64738_BUILD_SHA:-}" ]]; then
+            D64_NAME="programs-${SYS64738_BUILD_SHA}.d64"
+        fi
+    fi
+
+    D64_PATH="$OUTPUT_DIR/${D64_NAME}"
     echo "💾 Building D64 image: $D64_PATH"
     rm -f "$D64_PATH"
 
