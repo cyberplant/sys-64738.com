@@ -685,6 +685,8 @@ class CPU6502:
             return self._sty_zp()
         elif opcode == 0x8C:  # STY abs
             return self._sty_abs()
+        elif opcode == 0x94:  # STY zp,X (undocumented)
+            return self._sty_zpx()
         
         # Arithmetic
         elif opcode == 0x69:  # ADC imm
@@ -1227,6 +1229,13 @@ class CPU6502:
         addr = self._read_word(self.state.pc + 1)
         self.memory.write(addr, self.state.y)
         self.state.pc = (self.state.pc + 3) & 0xFFFF
+        return 4
+
+    def _sty_zpx(self) -> int:
+        """STY zero page,X (undocumented opcode $94)"""
+        zp_addr = (self.memory.read(self.state.pc + 1) + self.state.x) & 0xFF
+        self.memory.write(zp_addr, self.state.y)
+        self.state.pc = (self.state.pc + 2) & 0xFFFF
         return 4
     
     # Arithmetic operations (simplified)
