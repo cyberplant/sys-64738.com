@@ -386,6 +386,21 @@ class CPU6502:
         pc = self.state.pc
         opcode = self.memory.read(pc)
         
+        # Debug: Log when we reach $FEF0 to investigate memory mapping issue
+        if pc == 0xFEF0:
+            mem_config = self.memory.ram[0x01]
+            rom_enabled = (mem_config & 0x07) == 0x07
+            ram_value = self.memory.ram[0xFEF0]
+            if udp_debug and udp_debug.enabled:
+                udp_debug.send('debug_fef0', {
+                    'pc': pc,
+                    'opcode': opcode,
+                    'mem_config': mem_config,
+                    'rom_enabled': rom_enabled,
+                    'ram_value': ram_value,
+                    'expected_rom': self.memory.kernal_rom[0xFEF0 - 0xE000] if self.memory.kernal_rom else 0
+                })
+        
         # Log instruction execution if UDP debug is enabled
         # Note: cycles haven't been incremented yet, so we log the current cycle count
         # The actual cycles for this instruction will be returned and added later
