@@ -59,7 +59,7 @@ class CPUState:
     x: int = 0  # X register
     y: int = 0  # Y register
     sp: int = 0xFF  # Stack pointer
-    p: int = 0x24  # Processor status (Z=2, I=4, D=8, B=16, V=64, N=128)
+    p: int = 0x04  # Processor status (I=4 flag set by default on reset, like JSC64)
     cycles: int = 0
     stopped: bool = False
 
@@ -1859,6 +1859,10 @@ class C64Emulator:
     
     def _initialize_c64(self) -> None:
         """Initialize C64 to a known state"""
+        # Write to $0000 during reset (as JSC64 does)
+        # This is part of the 6510 processor port initialization
+        self.memory.ram[0x00] = 0x2F
+        
         # Memory configuration register ($01)
         # Bits 0-2: Memory configuration
         # 0x37 = %00110111 = BASIC ROM + KERNAL ROM + I/O enabled
