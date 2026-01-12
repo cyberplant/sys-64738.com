@@ -385,22 +385,7 @@ class CPU6502:
         
         pc = self.state.pc
         opcode = self.memory.read(pc)
-        
-        # Debug: Log when we reach $FEF0 to investigate memory mapping issue
-        if pc == 0xFEF0:
-            mem_config = self.memory.ram[0x01]
-            rom_enabled = (mem_config & 0x07) == 0x07
-            ram_value = self.memory.ram[0xFEF0]
-            if udp_debug and udp_debug.enabled:
-                udp_debug.send('debug_fef0', {
-                    'pc': pc,
-                    'opcode': opcode,
-                    'mem_config': mem_config,
-                    'rom_enabled': rom_enabled,
-                    'ram_value': ram_value,
-                    'expected_rom': self.memory.kernal_rom[0xFEF0 - 0xE000] if self.memory.kernal_rom else 0
-                })
-        
+
         # Log instruction execution if UDP debug is enabled
         # Note: cycles haven't been incremented yet, so we log the current cycle count
         # The actual cycles for this instruction will be returned and added later
@@ -436,7 +421,19 @@ class CPU6502:
                 self.memory.write(kb_buf_ptr, 0)  # Clear the character
                 self.state.a = char
             else:
-                # No input available - return 0
+                # No input available - inject "RUN\n" to auto-run loaded programs
+                # This simulates typing RUN and pressing enter
+                run_command = b"RUN\x0D"  # RUN + carriage return
+                if not hasattr(self, '_run_injected'):
+                    self._run_injected = True
+                    # Put RUN command into keyboard buffer
+                    kb_buf_ptr = 0x0277
+                    for i, char in enumerate(run_command):
+                        self.memory.write(kb_buf_ptr + i, char)
+                    self.memory.write(0xC6, len(run_command))  # Set buffer length
+                    print("Injected 'RUN' command into keyboard buffer")
+
+                # Return 0 (no input) after injecting RUN
                 self.state.a = 0
             
             # Return from JSR (RTS behavior)
@@ -1047,23 +1044,11 @@ class CPU6502:
     
     def _rts(self) -> int:
         """RTS"""
-        # Debug: Log stack contents before RTS
-        old_sp = self.state.sp
-        sp_addr_low = 0x100 + ((old_sp + 1) & 0xFF)
-        sp_addr_high = 0x100 + ((old_sp + 2) & 0xFF)
-        if self.state.pc >= 0xFD00:  # Only log in KERNAL area
-            print(f'RTS at PC=${self.state.pc:04X}, SP=${old_sp:02X}')
-            print(f'  Stack: ${self.memory.read(sp_addr_low):02X} ${self.memory.read(sp_addr_high):02X}')
-
         self.state.sp = (self.state.sp + 1) & 0xFF
         pc_low = self.memory.read(0x100 + self.state.sp)
         self.state.sp = (self.state.sp + 1) & 0xFF
         pc_high = self.memory.read(0x100 + self.state.sp)
         self.state.pc = ((pc_high << 8) | pc_low + 1) & 0xFFFF
-
-        if self.state.pc >= 0xFD00:  # Only log in KERNAL area
-            print(f'  Return to PC=${self.state.pc:04X}')
-
         return 6
     
     def _lda_imm(self) -> int:
