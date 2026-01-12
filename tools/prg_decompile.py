@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-prg_decompile.py - C64 PRG decompiler (BASIC detokenizer + 6502 disassembler)
+prg_decompile.py - C64 PRG/VSF decompiler (BASIC detokenizer + 6502 disassembler)
 
 Goals:
 - Zero dependencies (stdlib only)
@@ -10,12 +10,14 @@ Examples:
   python3 tools/prg_decompile.py programs/main.prg
   python3 tools/prg_decompile.py programs/main.prg --mode basic
   python3 tools/prg_decompile.py programs/main.prg --mode disasm --start 0x1000 --length 256
+  python3 tools/prg_decompile.py snapshot.vsf --mode acme > snapshot.asm
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 import signal
 import sys
 from typing import Dict, List, Optional, Tuple
@@ -411,6 +413,62 @@ def read_prg(path: str) -> Prg:
     return Prg(load_addr=load_addr, data=buf[2:])
 
 
+# --- VICE Snapshot (VSF) parsing ---
+
+def read_vsf(path: str) -> Prg:
+    """
+    Parse a VICE snapshot file (.vsf) and extract RAM.
+    Returns a Prg object with load_addr=0x0000 and data=64KB RAM.
+    
+    VSF format structure:
+    - Header: "VICE Snapshot File" + 0x1A + 0x02 + 0x00
+    - Modules: Each module has a 4-byte name (like "C64MEM")
+    - C64MEM module contains the 64KB RAM, typically 8 bytes after the module name
+    """
+    buf = open(path, "rb").read()
+    
+    # Check VSF header
+    if len(buf) < 20:
+        raise ValueError("VSF file too small")
+    
+    header = buf[0:20]
+    if not header.startswith(b"VICE Snapshot File"):
+        raise ValueError("Not a VICE snapshot file (invalid header)")
+    
+    # Find C64MEM module
+    c64mem_idx = buf.find(b"C64MEM")
+    if c64mem_idx < 0:
+        raise ValueError("C64MEM module not found in snapshot")
+    
+    # RAM typically starts 8 bytes after "C64MEM" (4 bytes name + 4 bytes padding/header)
+    ram_start = c64mem_idx + 8
+    
+    if ram_start + 0x10000 > len(buf):
+        raise ValueError("VSF file too small to contain 64KB RAM")
+    
+    # Extract 64KB RAM
+    ram_data = buf[ram_start:ram_start + 0x10000]
+    
+    # Verify it looks like RAM (check a few common addresses)
+    # $0801 often has BASIC program (non-zero link pointer)
+    if len(ram_data) >= 0x0803:
+        link = ram_data[0x0801] | (ram_data[0x0802] << 8)
+        # BASIC link should point forward and be reasonable
+        if not (0x0801 < link < 0xA000):
+            # Try alternative offsets (some VSF versions might differ)
+            for offset in [4, 12, 16, 20, 24]:
+                alt_start = c64mem_idx + 4 + offset
+                if alt_start + 0x10000 <= len(buf):
+                    alt_ram = buf[alt_start:alt_start + 0x10000]
+                    if len(alt_ram) >= 0x0803:
+                        alt_link = alt_ram[0x0801] | (alt_ram[0x0802] << 8)
+                        if 0x0801 < alt_link < 0xA000:
+                            ram_data = alt_ram
+                            break
+    
+    return Prg(load_addr=0x0000, data=ram_data)
+
+
 def looks_like_basic(prg: Prg) -> bool:
     # Most tokenized BASIC programs start at $0801.
     return prg.load_addr == 0x0801 and len(prg.data) >= 6
@@ -529,6 +587,202 @@ def _guess_sprite_block(data: bytes, i: int) -> Optional[int]:
     return None
 
 
+def _is_multicolor_sprite(sprite_data: bytes) -> bool:
+    """
+    Detect if a sprite is multicolor mode.
+    In multicolor mode, pixels are 2 bits (4 colors) instead of 1 bit.
+    We detect this by checking if the sprite uses the multicolor bit patterns.
+    """
+    if len(sprite_data) < 63:
+        return False
+    
+    # In multicolor mode, each byte pair represents 4 pixels (2 bits each)
+    # Check if we see patterns that suggest multicolor:
+    # - Non-zero bits in positions that would be used for multicolor
+    # - Patterns that don't make sense for hi-res (1 bit per pixel)
+    
+    # Count how many bytes have bits set in the "multicolor positions"
+    # In multicolor, we typically see more varied bit patterns
+    multicolor_indicators = 0
+    hi_res_indicators = 0
+    
+    for i in range(0, 63, 3):  # Process 3-byte rows
+        if i + 2 >= len(sprite_data):
+            break
+        row_bytes = sprite_data[i:i+3]
+        
+        # Check for multicolor patterns: bits often set in pairs
+        # In multicolor, adjacent bits in the same nybble are often both set/clear
+        for byte_val in row_bytes:
+            # Check if byte has patterns suggesting multicolor (2-bit pixels)
+            # Multicolor often has more "dense" patterns
+            bit_pairs = [
+                (byte_val & 0xC0) >> 6,  # Bits 7-6
+                (byte_val & 0x30) >> 4,  # Bits 5-4
+                (byte_val & 0x0C) >> 2,  # Bits 3-2
+                (byte_val & 0x03),       # Bits 1-0
+            ]
+            # If we see non-zero values in the upper bits of pairs, likely multicolor
+            if any(pair > 0 for pair in bit_pairs):
+                multicolor_indicators += 1
+            # Hi-res typically has more isolated bits
+            if byte_val != 0 and (byte_val & (byte_val - 1)) == 0:  # Power of 2 (single bit)
+                hi_res_indicators += 1
+    
+    # Heuristic: if we have more multicolor indicators, it's likely multicolor
+    # Also check if sprite uses "dense" patterns (many bits set)
+    total_bits = sum(bin(b).count('1') for b in sprite_data)
+    density = total_bits / (63 * 8)
+    
+    # Multicolor sprites often have higher bit density
+    if density > 0.3 and multicolor_indicators > hi_res_indicators * 1.5:
+        return True
+    
+    # Another check: if we see patterns that suggest 2-bit pixels
+    # (adjacent pixels often have similar values in multicolor)
+    return multicolor_indicators > hi_res_indicators * 2
+
+
+def _render_sprite_svg(sprite_data: bytes, addr: int, is_multicolor: bool, output_path: str) -> None:
+    """Render a C64 sprite as SVG"""
+    if len(sprite_data) < 63:
+        return
+    
+    # C64 sprite: 24x21 pixels (3 bytes per row, 21 rows)
+    width = 24
+    height = 21
+    
+    # C64 colors (approximate RGB values)
+    colors = {
+        0: "#000000",  # Black (transparent in hi-res, color 0 in multicolor)
+        1: "#FFFFFF",  # White
+        2: "#880000",  # Red
+        3: "#AAFFEE",  # Cyan
+        4: "#CC44CC",  # Purple
+        5: "#00CC55",  # Green
+        6: "#0000AA",  # Blue
+        7: "#EEEE77",  # Yellow
+        8: "#DD8855",  # Orange
+        9: "#664400",  # Brown
+        10: "#FF7777", # Light red
+        11: "#333333", # Dark grey
+        12: "#777777", # Grey
+        13: "#AAFF66", # Light green
+        14: "#0088FF", # Light blue
+        15: "#BBBBBB", # Light grey
+    }
+    
+    # Default multicolor palette (can be customized via VIC registers)
+    multicolor_palette = {
+        0: colors[0],   # Transparent
+        1: colors[1],   # White (sprite color)
+        2: colors[6],   # Blue (shared multicolor 1)
+        3: colors[2],   # Red (shared multicolor 2)
+    }
+    
+    pixels = []
+    
+    if is_multicolor:
+        # Multicolor: 2 bits per pixel, 4 pixels per byte (each pixel is 2x wide = 8 pixels per byte)
+        for row in range(height):
+            row_pixels = []
+            byte_offset = row * 3
+            for byte_idx in range(3):
+                if byte_offset + byte_idx >= len(sprite_data):
+                    break
+                byte_val = sprite_data[byte_offset + byte_idx]
+                # Extract 4 pixels (2 bits each) from byte
+                # Each 2-bit pixel is displayed as 2 pixels wide
+                for pixel_idx in range(4):
+                    pixel_x = byte_idx * 8 + pixel_idx * 2
+                    if pixel_x >= width:
+                        break
+                    # Get 2-bit pixel value (bits 7-6, 5-4, 3-2, 1-0)
+                    bit_shift = 6 - (pixel_idx * 2)
+                    pixel_val = (byte_val >> bit_shift) & 0x03
+                    # In multicolor, each 2-bit value represents a pixel that's 2x wide
+                    row_pixels.append((pixel_x, pixel_val))
+                    if pixel_x + 1 < width:
+                        row_pixels.append((pixel_x + 1, pixel_val))
+            pixels.append(row_pixels)
+    else:
+        # Hi-res: 1 bit per pixel, 8 pixels per byte
+        for row in range(height):
+            row_pixels = []
+            byte_offset = row * 3
+            for byte_idx in range(3):
+                if byte_offset + byte_idx >= len(sprite_data):
+                    break
+                byte_val = sprite_data[byte_offset + byte_idx]
+                # Extract 8 pixels (1 bit each) from byte
+                for bit_idx in range(8):
+                    pixel_x = byte_idx * 8 + bit_idx
+                    if pixel_x >= width:
+                        break
+                    pixel_val = 1 if (byte_val & (0x80 >> bit_idx)) else 0
+                    row_pixels.append((pixel_x, pixel_val))
+            pixels.append(row_pixels)
+    
+    # Generate SVG
+    scale = 8  # Scale factor for visibility
+    svg_width = width * scale
+    svg_height = height * scale
+    
+    svg_lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg width="{svg_width}" height="{svg_height}" xmlns="http://www.w3.org/2000/svg">',
+        f'<rect width="{svg_width}" height="{svg_height}" fill="#000000"/>',
+    ]
+    
+    for row_idx, row_pixels in enumerate(pixels):
+        # Group consecutive pixels with same value for efficiency
+        current_x = None
+        current_val = None
+        current_width = 0
+        
+        for pixel_x, pixel_val in row_pixels:
+            if pixel_val == 0 and not is_multicolor:
+                # Skip transparent pixels in hi-res
+                if current_x is not None:
+                    color = multicolor_palette.get(current_val, colors.get(current_val, "#FFFFFF")) if is_multicolor else colors.get(current_val, "#FFFFFF")
+                    x = current_x * scale
+                    y = row_idx * scale
+                    pixel_width = scale * current_width
+                    svg_lines.append(f'<rect x="{x}" y="{y}" width="{pixel_width}" height="{scale}" fill="{color}"/>')
+                    current_x = None
+                continue
+            
+            if current_x is None:
+                current_x = pixel_x
+                current_val = pixel_val
+                current_width = 2 if is_multicolor else 1
+            elif pixel_val == current_val and pixel_x == current_x + current_width:
+                current_width += (2 if is_multicolor else 1)
+            else:
+                # Emit current pixel group
+                color = multicolor_palette.get(current_val, colors.get(current_val, "#FFFFFF")) if is_multicolor else colors.get(current_val, "#FFFFFF")
+                x = current_x * scale
+                y = row_idx * scale
+                pixel_width = scale * current_width
+                svg_lines.append(f'<rect x="{x}" y="{y}" width="{pixel_width}" height="{scale}" fill="{color}"/>')
+                current_x = pixel_x
+                current_val = pixel_val
+                current_width = 2 if is_multicolor else 1
+        
+        # Emit final pixel group
+        if current_x is not None:
+            color = multicolor_palette.get(current_val, colors.get(current_val, "#FFFFFF")) if is_multicolor else colors.get(current_val, "#FFFFFF")
+            x = current_x * scale
+            y = row_idx * scale
+            pixel_width = scale * current_width
+            svg_lines.append(f'<rect x="{x}" y="{y}" width="{pixel_width}" height="{scale}" fill="{color}"/>')
+    
+    svg_lines.append('</svg>')
+    
+    with open(output_path, 'w') as f:
+        f.write('\n'.join(svg_lines))
+
+
 def _find_zero_gaps(data: bytes, base_addr: int, start_off: int, gap_threshold: int = 128) -> List[Tuple[int, int]]:
     """
     Return list of (gap_start_addr, gap_end_addr_exclusive) for long $00 runs.
@@ -549,7 +803,7 @@ def _find_zero_gaps(data: bytes, base_addr: int, start_off: int, gap_threshold: 
     return gaps
 
 
-def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) -> List[str]:
+def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False, export_sprites: bool = False, output_dir: str = ".") -> List[str]:
     """
     Emit ACME-friendly output with:
     - * = $ADDR segment starts
@@ -623,13 +877,35 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) ->
             continue
 
         op = data[i]
+        
+        # Check for text BEFORE checking opcodes (same logic as output phase)
+        # This prevents 0x20 (JSR/space) from being misidentified as instructions
+        text_guess = None
+        if i + 10 <= len(data):
+            lookahead = min(20, len(data) - i)
+            printable_count = 0
+            has_alnum_after_space = False
+            for j in range(lookahead):
+                if _is_printable(data[i + j]):
+                    printable_count += 1
+                    if j > 0 and data[i + j - 1] == 0x20 and chr(data[i + j]).isalnum():
+                        has_alnum_after_space = True
+                else:
+                    break
+            
+            if (has_alnum_after_space and printable_count >= 8) or printable_count >= 12:
+                text_guess = _guess_text(data, i, min_len=8)
+        
         info = OPCODES.get(op)
+        if info is None and text_guess is None:
+            text_guess = _guess_text(data, i, min_len=10)
+        
+        if text_guess:
+            ln, _txt, has_nul = text_guess
+            i += ln + (1 if has_nul else 0)
+            continue
+        
         if info is None:
-            tg = _guess_text(data, i, min_len=10)
-            if tg:
-                ln, _txt, has_nul = tg
-                i += ln + (1 if has_nul else 0)
-                continue
             i += 1
             continue
 
@@ -758,7 +1034,8 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) ->
 
     # Emit header + symbol tables
     out: List[str] = []
-    out.append(f"; Decompiled from PRG (load={_hex16(base)}, len={len(data)} bytes)")
+    source_type = "VSF snapshot" if base == 0x0000 and len(data) == 0x10000 else "PRG"
+    out.append(f"; Decompiled from {source_type} (load={_hex16(base)}, len={len(data)} bytes)")
     out.append("; ACME-friendly output with labels and basic heuristics.")
     out.append("")
     out.append("!cpu 6510")
@@ -1029,9 +1306,33 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) ->
         spr_len = _guess_sprite_block(data, i)
         if spr_len and not spans_label(addr, spr_len):
             alloc_data_label(addr, "sprite")
-            out.append(f"{data_labels[addr]}:")
+            sprite_label = data_labels[addr]
+            out.append(f"{sprite_label}:")
             out.append(f"; sprite data (guess): {spr_len} bytes")
             block = data[i:i + spr_len]
+            
+            # Export sprite if requested
+            if export_sprites:
+                is_multicolor = _is_multicolor_sprite(block)
+                # Clean up sprite name - remove any existing address suffixes
+                sprite_name = sprite_label.replace("sprite", "sprite_data").replace("_data_data", "_data")
+                # Remove any existing address pattern from name (hex or decimal)
+                import re
+                sprite_name = re.sub(r'_[0-9A-Fa-f]{4}$', '', sprite_name, flags=re.IGNORECASE)
+                
+                # Export as multicolor if detected, otherwise export both
+                if is_multicolor:
+                    svg_path = os.path.join(output_dir, f"{sprite_name}_{addr:04X}_multicolor.svg")
+                    _render_sprite_svg(block, addr, True, svg_path)
+                    out.append(f"; Exported: {svg_path}")
+                else:
+                    # Export both hi-res and multicolor guesses
+                    svg_path_hi = os.path.join(output_dir, f"{sprite_name}_{addr:04X}_hires.svg")
+                    svg_path_mc = os.path.join(output_dir, f"{sprite_name}_{addr:04X}_multicolor.svg")
+                    _render_sprite_svg(block, addr, False, svg_path_hi)
+                    _render_sprite_svg(block, addr, True, svg_path_mc)
+                    out.append(f"; Exported: {svg_path_hi} (hi-res) and {svg_path_mc} (multicolor)")
+            
             for row in range(0, spr_len, 12):
                 chunk = block[row:row + 12]
                 bytes_list = ",".join(_hex(b) for b in chunk)
@@ -1043,24 +1344,50 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) ->
             continue
 
         op = data[i]
+        
+        # Check for text BEFORE checking opcodes, especially for ambiguous bytes like 0x20 (JSR/space)
+        # If we see a pattern that looks like text (spaces + alphanumeric), prioritize text detection
+        text_guess = None
+        if i + 10 <= len(data):
+            # Check if current position looks like text start
+            # Look ahead: if we see 3+ consecutive printable chars (especially spaces + letters), it's likely text
+            lookahead = min(20, len(data) - i)
+            printable_count = 0
+            has_alnum_after_space = False
+            for j in range(lookahead):
+                if _is_printable(data[i + j]):
+                    printable_count += 1
+                    if j > 0 and data[i + j - 1] == 0x20 and chr(data[i + j]).isalnum():
+                        has_alnum_after_space = True
+                else:
+                    break
+            
+            # If we see spaces followed by alphanumeric, or long runs of printable, check for text
+            if (has_alnum_after_space and printable_count >= 8) or printable_count >= 12:
+                text_guess = _guess_text(data, i, min_len=8)
+        
+        # Also check if current byte is not a recognized opcode
         info = OPCODES.get(op)
-
-        if info is None:
+        if info is None and text_guess is None:
             text_guess = _guess_text(data, i, min_len=10)
-            if text_guess:
-                ln, txt, has_nul = text_guess
-                total_len = ln + (1 if has_nul else 0)
-                if not spans_label(addr, total_len):
-                    alloc_data_label(addr, "text")
-                    out.append(f"{data_labels[addr]}:")
-                    out.append(f'        !text "{_escape_acme_string(txt)}" ; {addr:04X}: {_fmt_bytes(data[i:i+ln])}')
-                    i += ln
+        
+        # If we found text, emit it (even if current byte is a valid opcode like 0x20=JSR)
+        if text_guess:
+            ln, txt, has_nul = text_guess
+            total_len = ln + (1 if has_nul else 0)
+            if not spans_label(addr, total_len):
+                alloc_data_label(addr, "text")
+                out.append(f"{data_labels[addr]}:")
+                out.append(f'        !text "{_escape_acme_string(txt)}" ; {addr:04X}: {_fmt_bytes(data[i:i+ln])}')
+                i += ln
+                cur_addr = base + i
+                if has_nul:
+                    out.append(f"        !byte $00{' ' * 34}; {cur_addr:04X}: 00")
+                    i += 1
                     cur_addr = base + i
-                    if has_nul:
-                        out.append(f"        !byte $00{' ' * 34}; {cur_addr:04X}: 00")
-                        i += 1
-                        cur_addr = base + i
-                    continue
+                continue
+        
+        if info is None:
 
             # Check if this address has a label (shouldn't normally happen for single bytes,
             # but check anyway to be safe)
@@ -1160,16 +1487,23 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) ->
 
 
 def main(argv: List[str]) -> int:
-    ap = argparse.ArgumentParser(description="C64 PRG decompiler (BASIC detokenizer + 6502 disassembler)")
-    ap.add_argument("prg", help="Path to .prg file")
+    ap = argparse.ArgumentParser(description="C64 PRG/VSF decompiler (BASIC detokenizer + 6502 disassembler)")
+    ap.add_argument("input_file", help="Path to .prg or .vsf (VICE snapshot) file")
     ap.add_argument("--mode", choices=["auto", "basic", "disasm", "acme"], default="auto", help="Output mode")
     ap.add_argument("--start", default=None, help="Disasm start address (hex like 0x1000 or $1000 or decimal)")
     ap.add_argument("--length", type=int, default=None, help="Disasm byte length")
     ap.add_argument("--gap-threshold", type=int, default=128, help="ACME mode: compress $00 gaps >= this size")
     ap.add_argument("-v", "--verbose", action="store_true", help="ACME mode: add extra explanatory comments per instruction")
+    ap.add_argument("--export-sprites", action="store_true", help="Export detected sprites as SVG images")
+    ap.add_argument("--sprite-output-dir", default=".", help="Directory for exported sprite images (default: current directory)")
     args = ap.parse_args(argv)
 
-    prg = read_prg(args.prg)
+    # Detect file type and read accordingly
+    input_path = args.input_file.lower()
+    if input_path.endswith('.vsf'):
+        prg = read_vsf(args.input_file)
+    else:
+        prg = read_prg(args.input_file)
 
     # Parse start argument if provided
     start: Optional[int] = None
@@ -1202,7 +1536,8 @@ def main(argv: List[str]) -> int:
         return 0
 
     if mode == "acme":
-        lines = decompile_acme(prg, gap_threshold=args.gap_threshold, verbose=args.verbose)
+        lines = decompile_acme(prg, gap_threshold=args.gap_threshold, verbose=args.verbose, 
+                               export_sprites=args.export_sprites, output_dir=args.sprite_output_dir)
         for l in lines:
             print(l)
         return 0
