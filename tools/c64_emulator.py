@@ -1003,11 +1003,10 @@ class CPU6502:
         elif opcode == 0x2C:  # BIT abs
             return self._bit_abs()
         else:
-            # Unknown opcode - just advance PC (this shouldn't happen with valid C64 code)
-            print(f"Warning: Unknown opcode ${opcode:02X} at PC=${self.state.pc:04X}")
-            # Advance PC by 1 byte (minimum instruction size)
-            self.state.pc = (self.state.pc + 1) & 0xFFFF
-            return 2
+            # Unknown opcode - halt CPU (like VICE does)
+            print(f"CPU halted: Unknown opcode ${opcode:02X} at PC=${self.state.pc:04X}")
+            self.state.stopped = True
+            return 0
     
     def _brk(self) -> int:
         """BRK instruction"""
@@ -1033,10 +1032,10 @@ class CPU6502:
     def _jsr_abs(self) -> int:
         """JSR absolute"""
         addr = self._read_word(self.state.pc + 1)
-        # Push return address - 1 onto stack
+        # Push return address (PC + 2) onto stack (address of next instruction - 1)
         return_addr = (self.state.pc + 2) & 0xFFFF
-        pc_high = (return_addr - 1) >> 8
-        pc_low = (return_addr - 1) & 0xFF
+        pc_high = return_addr >> 8
+        pc_low = return_addr & 0xFF
         self.memory.write(0x100 + self.state.sp, pc_high)
         self.state.sp = (self.state.sp - 1) & 0xFF
         self.memory.write(0x100 + self.state.sp, pc_low)
