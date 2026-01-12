@@ -663,6 +663,8 @@ class CPU6502:
             return self._ldy_zp()
         elif opcode == 0xAC:  # LDY abs
             return self._ldy_abs()
+        elif opcode == 0xB4:  # LDY zp,X (undocumented)
+            return self._ldy_zpx()
         elif opcode == 0x85:  # STA zp
             return self._sta_zp()
         elif opcode == 0x95:  # STA zpx
@@ -910,6 +912,20 @@ class CPU6502:
             self._update_flags(self.state.a)
             self.state.pc = (self.state.pc + 3) & 0xFFFF
             return 7
+        elif opcode == 0xA7:  # LAX zp (undocumented - LDA + TAX)
+            zp_addr = self.memory.read(self.state.pc + 1)
+            self.state.a = self.memory.read(zp_addr)
+            self.state.x = self.state.a
+            self._update_flags(self.state.a)
+            self.state.pc = (self.state.pc + 2) & 0xFFFF
+            return 3
+        elif opcode == 0xAF:  # LAX abs (undocumented - LDA + TAX)
+            addr = self._read_word(self.state.pc + 1)
+            self.state.a = self.memory.read(addr)
+            self.state.x = self.state.a
+            self._update_flags(self.state.a)
+            self.state.pc = (self.state.pc + 3) & 0xFFFF
+            return 4
         elif opcode == 0xBF:  # LAX absy (undocumented - LDA + TAX)
             base = self._read_word(self.state.pc + 1)
             addr = (base + self.state.y) & 0xFFFF
@@ -1170,6 +1186,14 @@ class CPU6502:
         self.state.y = self.memory.read(addr)
         self._update_flags(self.state.y)
         self.state.pc = (self.state.pc + 3) & 0xFFFF
+        return 4
+
+    def _ldy_zpx(self) -> int:
+        """LDY zero page,X (undocumented opcode $B4)"""
+        zp_addr = (self.memory.read(self.state.pc + 1) + self.state.x) & 0xFF
+        self.state.y = self.memory.read(zp_addr)
+        self._update_flags(self.state.y)
+        self.state.pc = (self.state.pc + 2) & 0xFFFF
         return 4
     
     def _sta_zpx(self) -> int:
