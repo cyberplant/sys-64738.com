@@ -65,6 +65,7 @@ To analyze/diff compiled PRGs, use:
 python3 tools/prg_decompile.py programs/main.prg
 python3 tools/prg_decompile.py programs/main.prg --mode basic
 python3 tools/prg_decompile.py programs/main.prg --mode disasm --start 0x1000 --length 256
+python3 tools/prg_decompile.py programs/main.prg --mode acme > /tmp/out.asm
 ```
 
 ## File Structure

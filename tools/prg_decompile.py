@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import signal
 import sys
 from typing import Dict, List, Optional, Tuple
 
@@ -166,10 +167,12 @@ class BasicLine:
     text: str
 
 
-def parse_basic_prg(load_addr: int, data: bytes) -> List[BasicLine]:
+def parse_basic_prg(load_addr: int, data: bytes) -> Tuple[List[BasicLine], int]:
     """
     Parse a tokenized BASIC program loaded at load_addr (usually 0x0801).
     data is the PRG body (excluding 2-byte load address header).
+
+    Returns (lines, end_addr) where end_addr is the address just after the 00 00 end marker.
     """
     if len(data) < 4:
         raise ValueError("PRG too small to be BASIC")
@@ -190,6 +193,7 @@ def parse_basic_prg(load_addr: int, data: bytes) -> List[BasicLine]:
             raise ValueError("Truncated BASIC line link")
         link = data[at(addr)] | (data[at(addr + 1)] << 8)
         if link == 0x0000:
+            end_addr = addr + 2
             break
 
         if addr + 4 > max_addr:
@@ -216,7 +220,7 @@ def parse_basic_prg(load_addr: int, data: bytes) -> List[BasicLine]:
             raise ValueError(f"Invalid BASIC link ${link:04X} at ${addr:04X}")
         addr = link
 
-    return lines
+    return lines, end_addr
 
 
 # --- 6502 disassembler ---
@@ -412,12 +416,258 @@ def looks_like_basic(prg: Prg) -> bool:
     return prg.load_addr == 0x0801 and len(prg.data) >= 6
 
 
+def _hex(b: int) -> str:
+    return f"${b:02X}"
+
+
+def _hex16(v: int) -> str:
+    return f"${v & 0xFFFF:04X}"
+
+
+def _fmt_bytes(bs: bytes) -> str:
+    return " ".join(f"{b:02X}" for b in bs)
+
+
+def _is_printable(b: int) -> bool:
+    return 0x20 <= b <= 0x7E
+
+
+def _escape_acme_string(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+KNOWN_C64_ADDRS: Dict[int, str] = {
+    0xD020: "VIC border color",
+    0xD021: "VIC background color",
+    0xD011: "VIC control register 1",
+    0xD016: "VIC control register 2",
+    0xD015: "VIC sprite enable",
+    0xD027: "VIC sprite 0 color",
+    0xD028: "VIC sprite 1 color",
+    0x07F8: "Sprite pointer 0",
+    0x07F9: "Sprite pointer 1",
+    0x0400: "Screen RAM",
+    0xD800: "Color RAM",
+    0xDC00: "CIA1 (keyboard/joystick)",
+}
+
+def comment_for_addr(v: int) -> Optional[str]:
+    v &= 0xFFFF
+    if v in KNOWN_C64_ADDRS:
+        return KNOWN_C64_ADDRS[v]
+    # SID register block
+    if 0xD400 <= v <= 0xD418:
+        return "SID register"
+    # VIC register block
+    if 0xD000 <= v <= 0xD02E:
+        return "VIC register"
+    return None
+
+
+def _guess_text(data: bytes, i: int, *, min_len: int = 8) -> Optional[Tuple[int, str, bool]]:
+    """
+    Heuristic: if there's a run of printable bytes (optionally NUL-terminated), treat as text.
+    Returns (length, text, has_nul_term).
+    """
+    # Avoid common false positives: don't start a text run on punctuation/control-ish bytes.
+    first = data[i]
+    if not (_is_printable(first) and (chr(first).isalnum() or chr(first) == " ")):
+        return None
+    j = i
+    while j < len(data) and _is_printable(data[j]):
+        j += 1
+    if j - i < min_len:
+        return None
+    has_nul = (j < len(data) and data[j] == 0x00)
+    text = data[i:j].decode("latin1", errors="replace")
+    return (j - i, text, has_nul)
+
+
+def _guess_sprite_block(data: bytes, i: int) -> Optional[int]:
+    """
+    Heuristic: 63-byte sprite (21 rows * 3 bytes). Commonly aligned to 64.
+    Returns length (63) if plausible.
+    """
+    if i + 63 > len(data):
+        return None
+    block = data[i:i + 63]
+    # Many sprites are sparse: lots of 0x00, or sometimes lots of 0xFF.
+    zeros = sum(1 for b in block if b == 0x00)
+    ffs = sum(1 for b in block if b == 0xFF)
+    if (zeros + ffs) / 63.0 >= 0.65:
+        return 63
+    return None
+
+
+def _find_zero_gaps(data: bytes, base_addr: int, start_off: int, gap_threshold: int = 128) -> List[Tuple[int, int]]:
+    """
+    Return list of (gap_start_addr, gap_end_addr_exclusive) for long $00 runs.
+    """
+    gaps: List[Tuple[int, int]] = []
+    i = start_off
+    n = len(data)
+    while i < n:
+        if data[i] != 0x00:
+            i += 1
+            continue
+        j = i
+        while j < n and data[j] == 0x00:
+            j += 1
+        if j - i >= gap_threshold:
+            gaps.append((base_addr + i, base_addr + j))
+        i = j
+    return gaps
+
+
+def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
+    """
+    Emit ACME-friendly output with:
+    - * = $ADDR segment starts
+    - instructions and bytes as right-side comments
+    - heuristics for BASIC stub, text, sprite blocks
+    - long $00 gaps compressed into a single segment jump
+    """
+    if not OPCODES:
+        _init_opcodes()
+
+    base = prg.load_addr
+    data = prg.data
+    out: List[str] = []
+    out.append(f"; Decompiled from PRG (load={_hex16(base)}, len={len(data)} bytes)")
+    out.append("")
+
+    # BASIC stub detection at $0801 (common for ML PRGs)
+    basic_end_addr: Optional[int] = None
+    basic_lines: List[BasicLine] = []
+    if base == 0x0801:
+        try:
+            basic_lines, basic_end_addr = parse_basic_prg(base, data)
+        except Exception:
+            basic_end_addr = None
+
+    i = 0
+    cur_addr = base
+
+    # If we have a BASIC program at the start, emit it as raw bytes with readable BASIC as comments.
+    if basic_end_addr is not None:
+        end_off = basic_end_addr - base
+        out.append(f"* = $0801")
+        out.append("; BASIC stub (tokenized):")
+        for bl in basic_lines:
+            out.append(f"; {bl.number} {bl.text}".rstrip())
+        # Emit bytes in rows of 12 like typical ACME listings.
+        stub = data[0:end_off]
+        for row in range(0, len(stub), 12):
+            chunk = stub[row:row + 12]
+            bytes_list = ",".join(_hex(b) for b in chunk)
+            addr_here = base + row
+            out.append(f"        !byte {bytes_list:<47} ; {addr_here:04X}: {_fmt_bytes(chunk)}")
+        out.append("")
+        i = end_off
+        cur_addr = base + i
+
+    # Identify large $00 gaps and compress them by jumping origin.
+    gaps = _find_zero_gaps(data, base, i, gap_threshold=gap_threshold)
+    gap_iter = iter(gaps)
+    next_gap = next(gap_iter, None)
+
+    def start_segment(addr: int) -> None:
+        out.append(f"* = { _hex16(addr) }")
+
+    start_segment(cur_addr)
+
+    while i < len(data):
+        addr = base + i
+
+        if next_gap and addr == next_gap[0]:
+            # Skip gap
+            g0, g1 = next_gap
+            out.append(f"; ... gap {g1 - g0} bytes of $00 from {g0:04X} to {g1-1:04X}")
+            i = g1 - base
+            cur_addr = base + i
+            out.append("")
+            if i >= len(data):
+                break
+            start_segment(cur_addr)
+            next_gap = next(gap_iter, None)
+            continue
+
+        # Sprite heuristic (63 bytes)
+        spr_len = _guess_sprite_block(data, i)
+        if spr_len:
+            out.append(f"; sprite data (guess): {spr_len} bytes")
+            block = data[i:i + spr_len]
+            for row in range(0, spr_len, 12):
+                chunk = block[row:row + 12]
+                bytes_list = ",".join(_hex(b) for b in chunk)
+                addr_here = addr + row
+                out.append(f"        !byte {bytes_list:<47} ; {addr_here:04X}: {_fmt_bytes(chunk)}")
+            i += spr_len
+            cur_addr = base + i
+            out.append("")
+            continue
+
+        op = data[i]
+        info = OPCODES.get(op)
+
+        # Text heuristic (only when the current byte is NOT a known opcode).
+        # This reduces false positives like 0x60 (RTS) being treated as '`' text.
+        if info is None:
+            text_guess = _guess_text(data, i, min_len=10)
+            if text_guess:
+                ln, txt, has_nul = text_guess
+                out.append(f'        !text "{_escape_acme_string(txt)}" ; {addr:04X}: {_fmt_bytes(data[i:i+ln])}')
+                i += ln
+                cur_addr = base + i
+                if has_nul:
+                    out.append(f"        !byte $00{' ' * 34}; {cur_addr:04X}: 00")
+                    i += 1
+                    cur_addr = base + i
+                continue
+
+        if info is None:
+            out.append(f"        !byte {_hex(op):<40} ; {addr:04X}: {op:02X}")
+            i += 1
+            cur_addr = base + i
+            continue
+
+        size = info.size
+        if i + size > len(data):
+            tail = data[i:]
+            out.append(f"        !byte {','.join(_hex(b) for b in tail)} ; {addr:04X}: {_fmt_bytes(tail)}")
+            break
+
+        raw = data[i:i + size]
+        operand = fmt_operand(info.mode, addr, raw)
+        mnem = info.mnemonic.lower()
+
+        asm = f"{mnem}"
+        if operand:
+            asm += f" {operand.lower()}"
+
+        # Known-address comment
+        extra = ""
+        if info.mode in ("abs", "absx", "absy"):
+            v = raw[1] | (raw[2] << 8)
+            c = comment_for_addr(v)
+            if c:
+                extra = f" ; {c}"
+
+        # Right side bytes/address comment
+        out.append(f"        {asm:<26} ; {addr:04X}: {_fmt_bytes(raw)}{extra}")
+        i += size
+        cur_addr = base + i
+
+    return out
+
+
 def main(argv: List[str]) -> int:
     ap = argparse.ArgumentParser(description="C64 PRG decompiler (BASIC detokenizer + 6502 disassembler)")
     ap.add_argument("prg", help="Path to .prg file")
-    ap.add_argument("--mode", choices=["auto", "basic", "disasm"], default="auto", help="Output mode")
+    ap.add_argument("--mode", choices=["auto", "basic", "disasm", "acme"], default="auto", help="Output mode")
     ap.add_argument("--start", default=None, help="Disasm start address (hex like 0x1000 or $1000 or decimal)")
     ap.add_argument("--length", type=int, default=None, help="Disasm byte length")
+    ap.add_argument("--gap-threshold", type=int, default=128, help="ACME mode: compress $00 gaps >= this size")
     args = ap.parse_args(argv)
 
     prg = read_prg(args.prg)
@@ -439,7 +689,7 @@ def main(argv: List[str]) -> int:
 
     if mode == "basic":
         try:
-            lines = parse_basic_prg(prg.load_addr, prg.data)
+            lines, _end_addr = parse_basic_prg(prg.load_addr, prg.data)
         except Exception as e:
             raise SystemExit(f"Failed to parse BASIC PRG: {e}")
         for line in lines:
@@ -452,9 +702,20 @@ def main(argv: List[str]) -> int:
             print(l)
         return 0
 
+    if mode == "acme":
+        lines = decompile_acme(prg, gap_threshold=args.gap_threshold)
+        for l in lines:
+            print(l)
+        return 0
+
     raise SystemExit(f"Unknown mode: {mode}")
 
 
 if __name__ == "__main__":
+    # Avoid noisy BrokenPipeError when piping to `head`, etc.
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    except Exception:
+        pass
     raise SystemExit(main(sys.argv[1:]))
 
