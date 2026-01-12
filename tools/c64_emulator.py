@@ -43,6 +43,9 @@ SID_BASE = 0xD400
 CIA1_BASE = 0xDC00
 CIA2_BASE = 0xDD00
 
+# IRQ vector
+IRQ_VECTOR = 0x0314
+
 # Screen memory (default)
 SCREEN_MEM = 0x0400
 COLOR_MEM = 0xD800
@@ -62,6 +65,43 @@ class CPUState:
 
 
 @dataclass
+class CIATimer:
+    """CIA timer state"""
+    latch: int = 0xFFFF  # Timer latch value
+    counter: int = 0xFFFF  # Current counter value
+    running: bool = False  # Is timer running?
+    irq_enabled: bool = False  # Is IRQ enabled for this timer?
+    one_shot: bool = False  # One-shot mode (vs continuous)
+    input_mode: int = 0  # Input mode (0=processor clock)
+    
+    def update(self, cycles: int) -> bool:
+        """Update timer, return True if IRQ should be triggered"""
+        if not self.running:
+            return False
+        
+        if self.input_mode == 0:  # Processor clock mode
+            self.counter -= cycles
+            if self.counter <= 0:
+                # Timer underflow
+                # Reload timer first
+                overflow = abs(self.counter)
+                self.counter = self.latch - overflow
+                if self.counter < 0:
+                    self.counter = 0
+                
+                if self.irq_enabled:
+                    return True
+                # If one-shot, stop timer
+                if self.one_shot:
+                    self.running = False
+        return False
+    
+    def reset(self) -> None:
+        """Reset timer to latch value"""
+        self.counter = self.latch
+
+
+@dataclass
 class MemoryMap:
     """C64 memory map"""
     ram: bytearray = field(default_factory=lambda: bytearray(0x10000))
@@ -69,6 +109,10 @@ class MemoryMap:
     kernal_rom: Optional[bytes] = None
     char_rom: Optional[bytes] = None
     udp_debug: Optional['UdpDebugLogger'] = None
+    cia1_timer_a: CIATimer = field(default_factory=CIATimer)
+    cia1_timer_b: CIATimer = field(default_factory=CIATimer)
+    cia1_icr: int = 0  # Interrupt Control Register
+    pending_irq: bool = False  # Pending IRQ flag
     
     def read(self, addr: int) -> int:
         """Read from memory, handling ROM/RAM mapping"""
@@ -185,12 +229,109 @@ class MemoryMap:
     
     def _read_cia1(self, reg: int) -> int:
         """Read CIA1 register"""
-        # Keyboard, joystick, etc.
+        # Timer A low byte
+        if reg == 0x04:
+            return self.cia1_timer_a.counter & 0xFF
+        # Timer A high byte
+        elif reg == 0x05:
+            return (self.cia1_timer_a.counter >> 8) & 0xFF
+        # Timer B low byte
+        elif reg == 0x06:
+            return self.cia1_timer_b.counter & 0xFF
+        # Timer B high byte
+        elif reg == 0x07:
+            return (self.cia1_timer_b.counter >> 8) & 0xFF
+        # Interrupt Control Register (ICR)
+        elif reg == 0x0D:
+            # Reading ICR acknowledges interrupts
+            result = self.cia1_icr
+            self.cia1_icr = 0
+            self.pending_irq = False
+            return result
+        # Control Register A
+        elif reg == 0x0E:
+            result = 0
+            if self.cia1_timer_a.running:
+                result |= 0x01
+            if self.cia1_timer_a.one_shot:
+                result |= 0x08
+            if self.cia1_timer_a.input_mode != 0:
+                result |= (self.cia1_timer_a.input_mode << 5)
+            return result
+        # Control Register B
+        elif reg == 0x0F:
+            result = 0
+            if self.cia1_timer_b.running:
+                result |= 0x01
+            if self.cia1_timer_b.one_shot:
+                result |= 0x08
+            if self.cia1_timer_b.input_mode != 0:
+                result |= (self.cia1_timer_b.input_mode << 5)
+            return result
+        # Other registers (keyboard, joystick, etc.) - return 0 for now
         return 0
     
     def _write_cia1(self, reg: int, value: int) -> None:
         """Write CIA1 register"""
-        pass
+        # Timer A latch low byte
+        if reg == 0x04:
+            self.cia1_timer_a.latch = (self.cia1_timer_a.latch & 0xFF00) | value
+            if not self.cia1_timer_a.running:
+                self.cia1_timer_a.counter = (self.cia1_timer_a.counter & 0xFF00) | value
+        # Timer A latch high byte
+        elif reg == 0x05:
+            self.cia1_timer_a.latch = (self.cia1_timer_a.latch & 0x00FF) | (value << 8)
+            if not self.cia1_timer_a.running:
+                self.cia1_timer_a.counter = (self.cia1_timer_a.counter & 0x00FF) | (value << 8)
+        # Timer B latch low byte
+        elif reg == 0x06:
+            self.cia1_timer_b.latch = (self.cia1_timer_b.latch & 0xFF00) | value
+            if not self.cia1_timer_b.running:
+                self.cia1_timer_b.counter = (self.cia1_timer_b.counter & 0xFF00) | value
+        # Timer B latch high byte
+        elif reg == 0x07:
+            self.cia1_timer_b.latch = (self.cia1_timer_b.latch & 0x00FF) | (value << 8)
+            if not self.cia1_timer_b.running:
+                self.cia1_timer_b.counter = (self.cia1_timer_b.counter & 0x00FF) | (value << 8)
+        # Interrupt Control Register (ICR)
+        elif reg == 0x0D:
+            if value & 0x80:  # Set bits
+                # Enable interrupts for bits set in lower 7 bits
+                if value & 0x01:  # Timer A IRQ
+                    self.cia1_timer_a.irq_enabled = True
+                if value & 0x02:  # Timer B IRQ
+                    self.cia1_timer_b.irq_enabled = True
+            else:  # Clear bits
+                if value & 0x01:  # Timer A IRQ
+                    self.cia1_timer_a.irq_enabled = False
+                if value & 0x02:  # Timer B IRQ
+                    self.cia1_timer_b.irq_enabled = False
+        # Control Register A
+        elif reg == 0x0E:
+            # Bit 0: Start/stop timer
+            if value & 0x01:
+                if not self.cia1_timer_a.running:
+                    self.cia1_timer_a.counter = self.cia1_timer_a.latch
+                self.cia1_timer_a.running = True
+            else:
+                self.cia1_timer_a.running = False
+            # Bit 3: One-shot mode
+            self.cia1_timer_a.one_shot = (value & 0x08) != 0
+            # Bits 5-6: Input mode
+            self.cia1_timer_a.input_mode = (value >> 5) & 0x03
+        # Control Register B
+        elif reg == 0x0F:
+            # Bit 0: Start/stop timer
+            if value & 0x01:
+                if not self.cia1_timer_b.running:
+                    self.cia1_timer_b.counter = self.cia1_timer_b.latch
+                self.cia1_timer_b.running = True
+            else:
+                self.cia1_timer_b.running = False
+            # Bit 3: One-shot mode
+            self.cia1_timer_b.one_shot = (value & 0x08) != 0
+            # Bits 5-6: Input mode
+            self.cia1_timer_b.input_mode = (value >> 5) & 0x03
     
     def _read_cia2(self, reg: int) -> int:
         """Read CIA2 register"""
@@ -208,7 +349,9 @@ class CPU6502:
     def __init__(self, memory: MemoryMap):
         self.memory = memory
         self.state = CPUState()
-        self.state.pc = self._read_word(0xFFFC)  # Reset vector
+        # PC will be set from reset vector after ROMs are loaded
+        # Don't read it here as ROMs might not be loaded yet
+        self.state.pc = 0x0000
         
     def _read_word(self, addr: int) -> int:
         """Read 16-bit word (little-endian)"""
@@ -236,7 +379,9 @@ class CPU6502:
     def step(self, udp_debug: Optional[UdpDebugLogger] = None) -> int:
         """Execute one instruction, return cycles"""
         if self.state.stopped:
-            return 0
+            # If CPU is stopped (KIL), don't execute anything
+            # Return 1 cycle to prevent infinite loops in the run loop
+            return 1
         
         pc = self.state.pc
         opcode = self.memory.read(pc)
@@ -354,7 +499,68 @@ class CPU6502:
         
         cycles = self._execute_opcode(opcode)
         self.state.cycles += cycles
+        
+        # Update CIA timers
+        self._update_cia_timers(cycles)
+        
         return cycles
+    
+    def _update_cia_timers(self, cycles: int) -> None:
+        """Update CIA timers and check for IRQ"""
+        # Update Timer A
+        if self.memory.cia1_timer_a.update(cycles):
+            self.memory.cia1_icr |= 0x01  # Timer A interrupt
+            self.memory.cia1_icr |= 0x80  # IRQ flag
+            self.memory.pending_irq = True
+            self.memory.cia1_timer_a.reset()
+        
+        # Update Timer B (can be clocked by Timer A underflow)
+        timer_a_underflow = False
+        if self.memory.cia1_timer_a.counter <= 0 and self.memory.cia1_timer_a.running:
+            timer_a_underflow = True
+        
+        if self.memory.cia1_timer_b.input_mode == 2:  # Timer A underflow mode
+            if timer_a_underflow:
+                if self.memory.cia1_timer_b.update(1):  # Count by 1
+                    self.memory.cia1_icr |= 0x02  # Timer B interrupt
+                    self.memory.cia1_icr |= 0x80  # IRQ flag
+                    self.memory.pending_irq = True
+                    self.memory.cia1_timer_b.reset()
+        else:
+            if self.memory.cia1_timer_b.update(cycles):
+                self.memory.cia1_icr |= 0x02  # Timer B interrupt
+                self.memory.cia1_icr |= 0x80  # IRQ flag
+                self.memory.pending_irq = True
+                self.memory.cia1_timer_b.reset()
+    
+    def _handle_irq(self, udp_debug: Optional[UdpDebugLogger] = None) -> None:
+        """Handle IRQ interrupt"""
+        # Clear pending IRQ flag before handling
+        self.memory.pending_irq = False
+        
+        # Push PC and P to stack
+        pc = self.state.pc
+        self.memory.write(0x100 + self.state.sp, (pc >> 8) & 0xFF)
+        self.state.sp = (self.state.sp - 1) & 0xFF
+        self.memory.write(0x100 + self.state.sp, pc & 0xFF)
+        self.state.sp = (self.state.sp - 1) & 0xFF
+        self.memory.write(0x100 + self.state.sp, self.state.p | 0x10)  # Set B flag
+        self.state.sp = (self.state.sp - 1) & 0xFF
+        
+        # Set interrupt disable flag
+        self._set_flag(0x04, True)
+        
+        # Jump to IRQ vector
+        irq_addr = self._read_word(IRQ_VECTOR)
+        self.state.pc = irq_addr
+        
+        if udp_debug and udp_debug.enabled:
+            udp_debug.send('irq', {
+                'irq_addr': irq_addr,
+                'irq_addr_hex': f'${irq_addr:04X}',
+                'old_pc': pc,
+                'old_pc_hex': f'${pc:04X}'
+            })
     
     def _execute_opcode(self, opcode: int) -> int:
         """Execute opcode, return cycles"""
@@ -441,6 +647,20 @@ class CPU6502:
             return self._sbc_imm()
         elif opcode == 0xE5:  # SBC zp
             return self._sbc_zp()
+        elif opcode == 0xE1:  # SBC indx
+            zp_addr = (self.memory.read(self.state.pc + 1) + self.state.x) & 0xFF
+            addr_low = self.memory.read(zp_addr)
+            addr_high = self.memory.read((zp_addr + 1) & 0xFF)
+            addr = addr_low | (addr_high << 8)
+            value = self.memory.read(addr)
+            carry = 1 if self._get_flag(0x01) else 0
+            result = self.state.a - value - (1 - carry)
+            self._set_flag(0x01, result >= 0)
+            self._set_flag(0x40, ((self.state.a ^ value) & 0x80) != 0 and ((self.state.a ^ result) & 0x80) != 0)
+            self.state.a = result & 0xFF
+            self._update_flags(self.state.a)
+            self.state.pc = (self.state.pc + 2) & 0xFFFF
+            return 6
         elif opcode == 0xED:  # SBC abs
             return self._sbc_abs()
         elif opcode == 0xFD:  # SBC absx
@@ -709,6 +929,11 @@ class CPU6502:
         # Other
         elif opcode == 0x00:  # BRK
             return self._brk()
+        elif opcode == 0x02:  # KIL (undocumented - kill processor, halts CPU)
+            # KIL halts the processor - set stopped flag
+            self.state.stopped = True
+            self.state.pc = (self.state.pc + 1) & 0xFFFF
+            return 0
         elif opcode == 0xEA:  # NOP
             self.state.pc = (self.state.pc + 1) & 0xFFFF
             return 2
@@ -719,6 +944,7 @@ class CPU6502:
         else:
             # Unknown opcode - just advance PC (this shouldn't happen with valid C64 code)
             print(f"Warning: Unknown opcode ${opcode:02X} at PC=${self.state.pc:04X}")
+            # Advance PC by 1 byte (minimum instruction size)
             self.state.pc = (self.state.pc + 1) & 0xFFFF
             return 2
     
@@ -1610,6 +1836,13 @@ class C64Emulator:
         
         # Initialize C64 state
         self._initialize_c64()
+        
+        # Set CPU PC from reset vector (after ROMs are loaded and memory is initialized)
+        reset_low = self.memory.read(0xFFFC)
+        reset_high = self.memory.read(0xFFFD)
+        reset_addr = reset_low | (reset_high << 8)
+        self.cpu.state.pc = reset_addr
+        print(f"CPU reset vector: ${reset_addr:04X}")
     
     def _initialize_c64(self) -> None:
         """Initialize C64 to a known state"""
@@ -1672,6 +1905,32 @@ class C64Emulator:
         
         # Initialize keyboard buffer
         self.memory.ram[0xC6] = 0  # Number of characters in buffer
+        
+        # Initialize KERNAL vectors to defaults
+        # These are typically set by KERNAL during boot, but we initialize them here
+        # to prevent infinite loops if KERNAL doesn't set them
+        
+        # IRQ vector ($0314) - points to KERNAL IRQ handler
+        self.memory.ram[0x0314] = 0x31
+        self.memory.ram[0x0315] = 0xEA  # $EA31
+        
+        # BRK vector ($0316) - points to KERNAL BRK handler  
+        # BRK handler is typically at $FE66 in KERNAL ROM
+        self.memory.ram[0x0316] = 0x66
+        self.memory.ram[0x0317] = 0xFE  # $FE66
+        
+        # NMI vector ($0318) - points to KERNAL NMI handler
+        # NMI handler is typically at $FE47 in KERNAL ROM
+        self.memory.ram[0x0318] = 0x47
+        self.memory.ram[0x0319] = 0xFE  # $FE47
+        
+        # Initialize CIA1 timers (typical C64 boot values)
+        # Timer A is often used for jiffy clock (60Hz = ~16666 cycles at 1MHz)
+        # For now, set to a reasonable default
+        self.memory.cia1_timer_a.latch = 0xFFFF
+        self.memory.cia1_timer_a.counter = 0xFFFF
+        self.memory.cia1_timer_b.latch = 0xFFFF
+        self.memory.cia1_timer_b.counter = 0xFFFF
         
         print("C64 initialized")
     
@@ -1748,15 +2007,23 @@ class C64Emulator:
                 last_time = current_time
                 last_cycle_check = cycles
             
-            # Detect if we're stuck
-            if self.cpu.state.pc == last_pc:
+            # Detect if we're stuck (but ignore if CPU is stopped - that's expected)
+            if self.cpu.state.stopped:
+                # CPU is stopped (KIL instruction) - this is expected, just break
+                if self.debug:
+                    print(f"CPU stopped at PC=${self.cpu.state.pc:04X} (KIL instruction)")
+                break
+            elif self.cpu.state.pc == last_pc:
                 stuck_count += 1
                 if stuck_count > 1000:
                     if self.debug:
-                        print(f"Warning: PC stuck at ${self.cpu.state.pc:04X} for {stuck_count} steps")
-                    # Try to advance
-                    self.cpu.state.pc = (self.cpu.state.pc + 1) & 0xFFFF
-                    stuck_count = 0
+                        opcode = self.memory.read(self.cpu.state.pc)
+                        print(f"Warning: PC stuck at ${self.cpu.state.pc:04X} (opcode ${opcode:02X}) for {stuck_count} steps")
+                        print(f"  This usually means an opcode is not implemented or not advancing PC correctly")
+                    # Don't try to advance - this masks the real problem
+                    # Instead, stop execution to prevent infinite loops
+                    self.running = False
+                    break
             else:
                 stuck_count = 0
             last_pc = self.cpu.state.pc
