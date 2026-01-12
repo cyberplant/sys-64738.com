@@ -1847,13 +1847,12 @@ class C64Emulator:
         else:
             print(f"Warning: Character ROM not found at {char_path}")
         
-        # Initialize C64 state
+        # Initialize C64 state (sets memory config $01 = 0x37)
         self._initialize_c64()
         
         # Set CPU PC from reset vector (after ROMs are loaded and memory is initialized)
-        reset_low = self.memory.read(0xFFFC)
-        reset_high = self.memory.read(0xFFFD)
-        reset_addr = reset_low | (reset_high << 8)
+        # Use _read_word to ensure we read from KERNAL ROM correctly
+        reset_addr = self.cpu._read_word(0xFFFC)
         self.cpu.state.pc = reset_addr
         print(f"CPU reset vector: ${reset_addr:04X}")
     
@@ -2368,8 +2367,8 @@ def main():
     if args.prg_file:
         emu.load_prg(args.prg_file)
     
-    # Initialize CPU
-    reset_vector = emu.memory.read(0xFFFC) | (emu.memory.read(0xFFFD) << 8)
+    # Initialize CPU (use _read_word to ensure correct byte order and ROM mapping)
+    reset_vector = emu.cpu._read_word(0xFFFC)
     emu.cpu.state.pc = reset_vector
     print(f"Reset vector: ${reset_vector:04X}")
     
