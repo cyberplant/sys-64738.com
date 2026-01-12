@@ -451,6 +451,23 @@ KNOWN_C64_ADDRS: Dict[int, str] = {
     0xDC00: "CIA1 (keyboard/joystick)",
 }
 
+KNOWN_C64_SYMBOLS_EXACT: Dict[int, str] = {
+    0x0400: "SCREEN",
+    0xD800: "COLORRAM",
+    0xD000: "VIC",
+    0xD400: "SID",
+    0xDC00: "CIA1",
+    0xD020: "BORDER",
+    0xD021: "BACKGROUND",
+    0xD011: "VIC_CTRL1",
+    0xD016: "VIC_CTRL2",
+    0xD015: "SPRITEN",
+    0xD027: "SPRITEC0",
+    0xD028: "SPRITEC1",
+    0x07F8: "SPR_PTR0",
+    0x07F9: "SPR_PTR1",
+}
+
 def comment_for_addr(v: int) -> Optional[str]:
     v &= 0xFFFF
     if v in KNOWN_C64_ADDRS:
@@ -532,9 +549,30 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
 
     base = prg.load_addr
     data = prg.data
-    out: List[str] = []
-    out.append(f"; Decompiled from PRG (load={_hex16(base)}, len={len(data)} bytes)")
-    out.append("")
+
+    # --- Pre-scan for labels and symbolic addresses ---
+    @dataclasses.dataclass
+    class TargetInfo:
+        jsr: bool = False
+        jmp: bool = False
+        branch: bool = False
+
+    targets: Dict[int, TargetInfo] = {}
+    used_abs: set[int] = set()
+    used_zp: set[int] = set()
+
+    def mark_target(addr: int, kind: str) -> None:
+        addr &= 0xFFFF
+        ti = targets.get(addr)
+        if ti is None:
+            ti = TargetInfo()
+            targets[addr] = ti
+        if kind == "jsr":
+            ti.jsr = True
+        elif kind == "jmp":
+            ti.jmp = True
+        elif kind == "branch":
+            ti.branch = True
 
     # BASIC stub detection at $0801 (common for ML PRGs)
     basic_end_addr: Optional[int] = None
@@ -545,17 +583,118 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
         except Exception:
             basic_end_addr = None
 
+    scan_i = 0
+    if basic_end_addr is not None:
+        scan_i = basic_end_addr - base
+
+    gaps = _find_zero_gaps(data, base, scan_i, gap_threshold=gap_threshold)
+    gap_iter = iter(gaps)
+    next_gap = next(gap_iter, None)
+
+    i = scan_i
+    while i < len(data):
+        addr = base + i
+        if next_gap and addr == next_gap[0]:
+            i = next_gap[1] - base
+            next_gap = next(gap_iter, None)
+            continue
+
+        spr_len = _guess_sprite_block(data, i)
+        if spr_len:
+            i += spr_len
+            continue
+
+        op = data[i]
+        info = OPCODES.get(op)
+        if info is None:
+            tg = _guess_text(data, i, min_len=10)
+            if tg:
+                ln, _txt, has_nul = tg
+                i += ln + (1 if has_nul else 0)
+                continue
+            i += 1
+            continue
+
+        size = info.size
+        if i + size > len(data):
+            break
+        raw = data[i:i + size]
+
+        if info.mode in ("abs", "absx", "absy", "ind"):
+            used_abs.add(raw[1] | (raw[2] << 8))
+        if info.mode in ("zp", "zpx", "zpy", "indx", "indy"):
+            used_zp.add(raw[1])
+
+        if info.mnemonic == "JSR" and info.mode == "abs":
+            mark_target(raw[1] | (raw[2] << 8), "jsr")
+        elif info.mnemonic == "JMP" and info.mode == "abs":
+            mark_target(raw[1] | (raw[2] << 8), "jmp")
+        elif info.mode == "rel":
+            off = raw[1]
+            if off >= 0x80:
+                off -= 0x100
+            mark_target((addr + 2 + off) & 0xFFFF, "branch")
+
+        i += size
+
+    label_names: Dict[int, str] = {}
+    for a, ti in sorted(targets.items(), key=lambda kv: kv[0]):
+        if ti.jsr:
+            label_names[a] = f"function_{a:04X}"
+        else:
+            label_names[a] = f"label_{a:04X}"
+
+    def sym_for_abs(v: int) -> str:
+        v &= 0xFFFF
+        if v in KNOWN_C64_SYMBOLS_EXACT:
+            return KNOWN_C64_SYMBOLS_EXACT[v]
+        if v in label_names:
+            return label_names[v]
+        # base+offset forms for common register blocks
+        if 0xD000 <= v <= 0xD02E:
+            return f"VIC+${v-0xD000:02X}"
+        if 0xD400 <= v <= 0xD418:
+            return f"SID+${v-0xD400:02X}"
+        if 0xDC00 <= v <= 0xDC0F:
+            return f"CIA1+${v-0xDC00:02X}"
+        return _hex16(v)
+
+    def sym_for_zp(b: int) -> str:
+        return f"ZP_{b & 0xFF:02X}"
+
+    # Emit header + symbol tables
+    out: List[str] = []
+    out.append(f"; Decompiled from PRG (load={_hex16(base)}, len={len(data)} bytes)")
+    out.append("; ACME-friendly output with labels and basic heuristics.")
+    out.append("")
+    out.append("!cpu 6510")
+    out.append("")
+
+    symbol_defs: List[str] = []
+    for addr_val, name in sorted(KNOWN_C64_SYMBOLS_EXACT.items(), key=lambda kv: kv[0]):
+        if addr_val in used_abs:
+            symbol_defs.append(f"{name:<10}= {_hex16(addr_val)}")
+    if symbol_defs:
+        out.append("; C64 symbols (used)")
+        out.extend(symbol_defs)
+        out.append("")
+
+    if used_zp:
+        out.append("; Zero-page variables (guessed)")
+        for b in sorted(used_zp):
+            out.append(f"{sym_for_zp(b):<10}= {_hex(b)}")
+        out.append("")
+
+    # --- Actual output pass ---
     i = 0
     cur_addr = base
 
-    # If we have a BASIC program at the start, emit it as raw bytes with readable BASIC as comments.
     if basic_end_addr is not None:
         end_off = basic_end_addr - base
-        out.append(f"* = $0801")
+        out.append("* = $0801")
         out.append("; BASIC stub (tokenized):")
         for bl in basic_lines:
             out.append(f"; {bl.number} {bl.text}".rstrip())
-        # Emit bytes in rows of 12 like typical ACME listings.
         stub = data[0:end_off]
         for row in range(0, len(stub), 12):
             chunk = stub[row:row + 12]
@@ -566,7 +705,6 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
         i = end_off
         cur_addr = base + i
 
-    # Identify large $00 gaps and compress them by jumping origin.
     gaps = _find_zero_gaps(data, base, i, gap_threshold=gap_threshold)
     gap_iter = iter(gaps)
     next_gap = next(gap_iter, None)
@@ -580,7 +718,6 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
         addr = base + i
 
         if next_gap and addr == next_gap[0]:
-            # Skip gap
             g0, g1 = next_gap
             out.append(f"; ... gap {g1 - g0} bytes of $00 from {g0:04X} to {g1-1:04X}")
             i = g1 - base
@@ -592,7 +729,9 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
             next_gap = next(gap_iter, None)
             continue
 
-        # Sprite heuristic (63 bytes)
+        if addr in label_names:
+            out.append(f"{label_names[addr]}:")
+
         spr_len = _guess_sprite_block(data, i)
         if spr_len:
             out.append(f"; sprite data (guess): {spr_len} bytes")
@@ -610,8 +749,6 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
         op = data[i]
         info = OPCODES.get(op)
 
-        # Text heuristic (only when the current byte is NOT a known opcode).
-        # This reduces false positives like 0x60 (RTS) being treated as '`' text.
         if info is None:
             text_guess = _guess_text(data, i, min_len=10)
             if text_guess:
@@ -625,7 +762,6 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
                     cur_addr = base + i
                 continue
 
-        if info is None:
             out.append(f"        !byte {_hex(op):<40} ; {addr:04X}: {op:02X}")
             i += 1
             cur_addr = base + i
@@ -638,14 +774,45 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
             break
 
         raw = data[i:i + size]
-        operand = fmt_operand(info.mode, addr, raw)
-        mnem = info.mnemonic.lower()
 
+        # Operand formatting with symbols/labels
+        if info.mode == "imp":
+            operand = ""
+        elif info.mode == "acc":
+            operand = "A"
+        elif info.mode == "imm":
+            operand = f"#$%02X" % raw[1]
+        elif info.mode == "zp":
+            operand = sym_for_zp(raw[1])
+        elif info.mode == "zpx":
+            operand = f"{sym_for_zp(raw[1])},X"
+        elif info.mode == "zpy":
+            operand = f"{sym_for_zp(raw[1])},Y"
+        elif info.mode == "abs":
+            operand = sym_for_abs(raw[1] | (raw[2] << 8))
+        elif info.mode == "absx":
+            operand = f"{sym_for_abs(raw[1] | (raw[2] << 8))},X"
+        elif info.mode == "absy":
+            operand = f"{sym_for_abs(raw[1] | (raw[2] << 8))},Y"
+        elif info.mode == "ind":
+            operand = f"({sym_for_abs(raw[1] | (raw[2] << 8))})"
+        elif info.mode == "indx":
+            operand = f"({sym_for_zp(raw[1])},X)"
+        elif info.mode == "indy":
+            operand = f"({sym_for_zp(raw[1])}),Y"
+        elif info.mode == "rel":
+            off = raw[1]
+            if off >= 0x80:
+                off -= 0x100
+            operand = sym_for_abs((addr + 2 + off) & 0xFFFF)
+        else:
+            operand = fmt_operand(info.mode, addr, raw)
+
+        mnem = info.mnemonic.lower()
         asm = f"{mnem}"
         if operand:
-            asm += f" {operand.lower()}"
+            asm += f" {operand}"
 
-        # Known-address comment
         extra = ""
         if info.mode in ("abs", "absx", "absy"):
             v = raw[1] | (raw[2] << 8)
@@ -653,7 +820,6 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
             if c:
                 extra = f" ; {c}"
 
-        # Right side bytes/address comment
         out.append(f"        {asm:<26} ; {addr:04X}: {_fmt_bytes(raw)}{extra}")
         i += size
         cur_addr = base + i
