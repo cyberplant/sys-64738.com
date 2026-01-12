@@ -386,24 +386,20 @@ class CPU6502:
         pc = self.state.pc
         opcode = self.memory.read(pc)
         
-        # Log instruction execution if UDP debug is enabled (heavily sampled to reduce overhead)
+        # Log instruction execution if UDP debug is enabled
+        # Note: cycles haven't been incremented yet, so we log the current cycle count
+        # The actual cycles for this instruction will be returned and added later
         if udp_debug and udp_debug.enabled:
-            # Only log every 1000th instruction or interesting addresses to reduce overhead
-            # This reduces logging by 1000x while still capturing important events
-            should_log = (
-                (self.state.cycles % 10000 == 0) or  # Sample 0.01% of instructions
-                (pc == 0xFFD2) or  # Always log CHROUT calls
-                (pc == 0xFFCF) or  # CHRIN
-                (pc == 0xFFE4) or  # GETIN
-                (0xA000 <= pc < 0xA100)  # BASIC cold start area only
-            )
+            # Always log (user requested 100% logging), but we can sample if needed
+            should_log = True  # Always log for now
             
             if should_log:
                 # Minimal data to reduce JSON/serialization overhead
+                # Use self.state.cycles (before increment) - cycles will be added after execution
                 udp_debug.send('cpu_step', {
                     'pc': pc,
                     'opcode': opcode,
-                    'cycles': self.state.cycles
+                    'cycles': self.state.cycles  # Current cycle count (before this instruction)
                 })
         
         # Check if we're at a KERNAL vector that needs handling
@@ -428,12 +424,29 @@ class CPU6502:
                 # No input available - return 0
                 self.state.a = 0
             
-            # Return from JSR
+            # Return from JSR (RTS behavior)
+            # Stack grows downward, so we pop by incrementing SP
+            # JSR pushed (return_address - 1) with high byte first, then low byte
+            # So we pop low byte first, then high byte
             self.state.sp = (self.state.sp + 1) & 0xFF
             pc_low = self.memory.read(0x100 + self.state.sp)
             self.state.sp = (self.state.sp + 1) & 0xFF
             pc_high = self.memory.read(0x100 + self.state.sp)
+            # Reconstruct return address: (high << 8) | low + 1
             self.state.pc = ((pc_high << 8) | pc_low + 1) & 0xFFFF
+            
+            # Safety check: if return address is invalid (e.g., $0000), something is wrong
+            if self.state.pc == 0x0000:
+                if udp_debug and udp_debug.enabled:
+                    udp_debug.send('chrin_error', {
+                        'error': 'Invalid return address $0000',
+                        'sp': self.state.sp,
+                        'stack_ff': self.memory.read(0x01FF),
+                        'stack_fe': self.memory.read(0x01FE)
+                    })
+                # Don't jump to $0000 - instead stop CPU or use a safe address
+                self.state.stopped = True
+                return 20
             
             if udp_debug and udp_debug.enabled:
                 udp_debug.send('chrin', {
@@ -479,12 +492,35 @@ class CPU6502:
             self.memory.write(0xD1, cursor_addr & 0xFF)
             self.memory.write(0xD2, (cursor_addr >> 8) & 0xFF)
             
-            # Return from JSR (pop return address)
+            # Return from JSR (RTS behavior)
+            # On JSR: pushes (return_address - 1)
+            #   High byte first at current SP, then SP--
+            #   Low byte second at new SP, then SP--
+            #   So after JSR, SP points below the low byte
+            # On RTS: pops in reverse order
+            #   Increment SP, read low byte
+            #   Increment SP, read high byte
+            #   PC = (high << 8) | low + 1
             self.state.sp = (self.state.sp + 1) & 0xFF
             pc_low = self.memory.read(0x100 + self.state.sp)
             self.state.sp = (self.state.sp + 1) & 0xFF
             pc_high = self.memory.read(0x100 + self.state.sp)
+            # Reconstruct return address: (high << 8) | low + 1
             self.state.pc = ((pc_high << 8) | pc_low + 1) & 0xFFFF
+            
+            # Safety check: if return address is invalid (e.g., $0000), something is wrong
+            if self.state.pc == 0x0000:
+                if udp_debug and udp_debug.enabled:
+                    udp_debug.send('chrout_error', {
+                        'error': 'Invalid return address $0000',
+                        'sp_before': (self.state.sp - 2) & 0xFF,
+                        'sp_after': self.state.sp,
+                        'stack_low': pc_low,
+                        'stack_high': pc_high
+                    })
+                # Don't jump to $0000 - instead stop CPU or use a safe address
+                self.state.stopped = True
+                return 20
             
             # Log CHROUT call
             if udp_debug and udp_debug.enabled:
