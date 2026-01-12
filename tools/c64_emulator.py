@@ -78,17 +78,15 @@ class CIATimer:
         """Update timer, return True if IRQ should be triggered"""
         if not self.running:
             return False
-        
+
         if self.input_mode == 0:  # Processor clock mode
             self.counter -= cycles
             if self.counter <= 0:
-                # Timer underflow
-                # Reload timer first
-                overflow = abs(self.counter)
-                self.counter = self.latch - overflow
-                if self.counter < 0:
-                    self.counter = 0
-                
+                # Timer underflow - reload and generate interrupt
+                self.counter = self.latch + self.counter  # Handle partial cycle
+                if self.counter <= 0:
+                    self.counter = self.latch
+
                 if self.irq_enabled:
                     return True
                 # If one-shot, stop timer
@@ -547,10 +545,14 @@ class CPU6502:
         
         cycles = self._execute_opcode(opcode)
         self.state.cycles += cycles
-        
+
         # Update CIA timers
         self._update_cia_timers(cycles)
-        
+
+        # Check for pending IRQ (only if interrupts are enabled)
+        if self.memory.pending_irq and not self._get_flag(0x04):  # I flag clear
+            self._handle_irq(udp_debug)
+
         return cycles
     
     def _update_cia_timers(self, cycles: int) -> None:
@@ -2022,10 +2024,15 @@ class C64Emulator:
             self.memory.ram[addr + 1] = (value >> 8) & 0xFF
         
         # Initialize CIA1 timers (typical C64 boot values)
-        # Timer A is often used for jiffy clock (60Hz = ~16666 cycles at 1MHz)
-        # For now, set to a reasonable default
-        self.memory.cia1_timer_a.latch = 0xFFFF
-        self.memory.cia1_timer_a.counter = 0xFFFF
+        # Timer A is used for jiffy clock (60Hz = ~16667 cycles at ~1MHz)
+        # Set to 60Hz timing for system clock
+        jiffy_clock = 0x4027  # Approximately 60Hz at 1MHz
+        self.memory.cia1_timer_a.latch = jiffy_clock
+        self.memory.cia1_timer_a.counter = jiffy_clock
+        self.memory.cia1_timer_a.running = True  # Start timer
+        self.memory.cia1_timer_a.irq_enabled = True  # Enable interrupts
+
+        # Timer B can be used for other purposes
         self.memory.cia1_timer_b.latch = 0xFFFF
         self.memory.cia1_timer_b.counter = 0xFFFF
         
