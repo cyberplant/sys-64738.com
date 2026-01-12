@@ -906,6 +906,24 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) ->
         used_names.add(new_name)
     label_addrs = set(label_names.keys())
 
+    # Emit symbol definitions for labels that are referenced but outside PRG data range
+    prg_start = base
+    prg_end = base + len(data)
+    external_labels: List[Tuple[int, str]] = []
+    for addr, name in sorted(label_names.items(), key=lambda kv: kv[0]):
+        # Check if label is outside PRG data range
+        if addr < prg_start or addr >= prg_end:
+            # Avoid duplicates with known symbols
+            if addr not in KNOWN_KERNAL_SYMBOLS and addr not in KNOWN_C64_SYMBOLS_EXACT:
+                external_labels.append((addr, name))
+    
+    # Emit external labels section
+    if external_labels:
+        out.append("; External labels (referenced but outside PRG data)")
+        for addr, name in external_labels:
+            out.append(f"{name:<10}= {_hex16(addr)}")
+        out.append("")
+
     # --- Instruction explanation (optional verbose output) ---
     def explain(mn: str, mode: str, operand_txt: str, addr_here: int, raw_bytes: bytes) -> str:
         mn_u = mn.upper()
@@ -989,6 +1007,10 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) ->
 
         if next_gap and addr == next_gap[0]:
             g0, g1 = next_gap
+            # Check for labels within the gap and emit them before skipping
+            for gap_addr in range(g0, g1):
+                if gap_addr in label_names:
+                    out.append(f"{label_names[gap_addr]}:")
             out.append(f"; ... gap {g1 - g0} bytes of $00 from {g0:04X} to {g1-1:04X}")
             i = g1 - base
             cur_addr = base + i
@@ -1040,6 +1062,10 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) ->
                         cur_addr = base + i
                     continue
 
+            # Check if this address has a label (shouldn't normally happen for single bytes,
+            # but check anyway to be safe)
+            if addr in label_names:
+                out.append(f"{label_names[addr]}:")
             out.append(f"        !byte {_hex(op):<40} ; {addr:04X}: {op:02X}")
             i += 1
             cur_addr = base + i
@@ -1104,6 +1130,31 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) ->
         out.append(f"        {asm:<26} ; {addr:04X}: {_fmt_bytes(raw)}{extra}{desc_part}")
         i += size
         cur_addr = base + i
+
+    # Collect any labels that were in label_names but never emitted
+    # (This can happen if they're in gaps or data sections we skipped)
+    emitted_labels = set()
+    for line in out:
+        # Check if line is a label definition (starts with label name and ends with :)
+        if ':' in line and not line.strip().startswith(';') and not line.strip().startswith('*'):
+            label_name = line.split(':')[0].strip()
+            emitted_labels.add(label_name)
+    
+    # Find labels that weren't emitted but are in label_names and within PRG range
+    missing_labels: List[Tuple[int, str]] = []
+    prg_start = base
+    prg_end = base + len(data)
+    for addr, name in label_names.items():
+        if name not in emitted_labels and prg_start <= addr < prg_end:
+            missing_labels.append((addr, name))
+    
+    # Add missing labels as symbol definitions at the end
+    if missing_labels:
+        out.append("")
+        out.append("; Labels referenced but not emitted in code (may be in data/gaps)")
+        for addr, name in sorted(missing_labels, key=lambda x: x[0]):
+            out.append(f"{name:<10}= {_hex16(addr)}")
+        out.append("")
 
     return out
 
