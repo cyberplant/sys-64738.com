@@ -1047,11 +1047,23 @@ class CPU6502:
     
     def _rts(self) -> int:
         """RTS"""
+        # Debug: Log stack contents before RTS
+        old_sp = self.state.sp
+        sp_addr_low = 0x100 + ((old_sp + 1) & 0xFF)
+        sp_addr_high = 0x100 + ((old_sp + 2) & 0xFF)
+        if self.state.pc >= 0xFD00:  # Only log in KERNAL area
+            print(f'RTS at PC=${self.state.pc:04X}, SP=${old_sp:02X}')
+            print(f'  Stack: ${self.memory.read(sp_addr_low):02X} ${self.memory.read(sp_addr_high):02X}')
+
         self.state.sp = (self.state.sp + 1) & 0xFF
         pc_low = self.memory.read(0x100 + self.state.sp)
         self.state.sp = (self.state.sp + 1) & 0xFF
         pc_high = self.memory.read(0x100 + self.state.sp)
         self.state.pc = ((pc_high << 8) | pc_low + 1) & 0xFFFF
+
+        if self.state.pc >= 0xFD00:  # Only log in KERNAL area
+            print(f'  Return to PC=${self.state.pc:04X}')
+
         return 6
     
     def _lda_imm(self) -> int:
@@ -1985,22 +1997,44 @@ class C64Emulator:
         self.memory.ram[0x6C] = 0  # Status register (typically 0 = no error)
         
         # Initialize KERNAL vectors to defaults
-        # These are typically set by KERNAL during boot, but we initialize them here
-        # to prevent infinite loops if KERNAL doesn't set them
-        
-        # IRQ vector ($0314) - points to KERNAL IRQ handler
-        self.memory.ram[0x0314] = 0x31
-        self.memory.ram[0x0315] = 0xEA  # $EA31
-        
-        # BRK vector ($0316) - points to KERNAL BRK handler  
-        # BRK handler is typically at $FE66 in KERNAL ROM
-        self.memory.ram[0x0316] = 0x66
-        self.memory.ram[0x0317] = 0xFE  # $FE66
-        
-        # NMI vector ($0318) - points to KERNAL NMI handler
-        # NMI handler is typically at $FE47 in KERNAL ROM
-        self.memory.ram[0x0318] = 0x47
-        self.memory.ram[0x0319] = 0xFE  # $FE47
+        # These are copied from KERNAL ROM during RESTOR routine
+        # We initialize them here to prevent crashes during boot
+
+        # KERNAL RAM vectors ($0300-$0334)
+        # These should match the default values from KERNAL ROM
+        kernal_vectors = {
+            0x0300: 0xE45B,  # CINT - Initialize screen editor
+            0x0302: 0xFE4C,  # IOINIT - Initialize I/O
+            0x0304: 0xFDA3,  # RAMTAS - Initialize RAM
+            0x0306: 0xED50,  # RESTOR - Restore KERNAL vectors
+            0x0308: 0xFD4C,  # VECTOR - Change KERNAL vectors
+            0x030A: 0x15FD,  # SETMSG - Set system error display
+            0x030C: 0xED1A,  # LSTNSA - Send LIST to serial bus
+            0x030E: 0xFD4C,  # TALKSA - Send TALK to serial bus
+            0x0310: 0x18FE,  # MEMTOP - Set top of memory
+            0x0312: 0x4CB9,  # MEMBOT - Set bottom of memory
+            0x0314: 0xEA31,  # IRQ - IRQ handler
+            0x0316: 0xFE66,  # BRK - BRK handler
+            0x0318: 0xFE47,  # NMI - NMI handler
+            0x031A: 0xFE4C,  # OPEN - Open file
+            0x031C: 0x34FE,  # CLOSE - Close file
+            0x031E: 0x4C87,  # CHKIN - Set input channel
+            0x0320: 0xEA4C,  # CHKOUT - Set output channel
+            0x0322: 0x21FE,  # CLRCHN - Clear channels
+            0x0324: 0x4C13,  # CHRIN - Input character ($FFCF)
+            0x0326: 0xEE4C,  # CHROUT - Output character
+            0x0328: 0xDDED,  # STOP - Check stop key
+            0x032A: 0x4CEF,  # GETIN - Get character from keyboard
+            0x032C: 0xED4C,  # CLALL - Clear file table
+            0x032E: 0xFEED,  # UDTIM - Update clock
+            0x0330: 0x4C0C,  # SCREEN - Get screen size
+            0x0332: 0xED4C,  # PLOT - Set cursor position
+            0x0334: 0x09ED,  # IOBASE - Get I/O base address
+        }
+
+        for addr, value in kernal_vectors.items():
+            self.memory.ram[addr] = value & 0xFF
+            self.memory.ram[addr + 1] = (value >> 8) & 0xFF
         
         # Initialize CIA1 timers (typical C64 boot values)
         # Timer A is often used for jiffy clock (60Hz = ~16666 cycles at 1MHz)
