@@ -389,16 +389,15 @@ class CPU6502:
         # Note: cycles haven't been incremented yet, so we log the current cycle count
         # The actual cycles for this instruction will be returned and added later
         if udp_debug and udp_debug.enabled:
-            # Always log (user requested 100% logging), but we can sample if needed
-            should_log = True  # Always log for now
-            
+            # Sample logging to avoid queue overflow (log every 100 cycles or important events)
+            should_log = (self.state.cycles % 100 == 0) or (opcode == 0x00)  # Log BRK instructions
+
             if should_log:
                 # Minimal data to reduce JSON/serialization overhead
-                # Use self.state.cycles (before increment) - cycles will be added after execution
                 udp_debug.send('cpu_step', {
                     'pc': pc,
                     'opcode': opcode,
-                    'cycles': self.state.cycles  # Current cycle count (before this instruction)
+                    'cycles': self.state.cycles
                 })
         
         # Check if we're at a KERNAL vector that needs handling
@@ -1820,6 +1819,12 @@ class UdpDebugLogger:
                 try:
                     self.queue.get_nowait()
                     self.queue.put_nowait(message_bytes)
+                    # Debug: count dropped messages
+                    if not hasattr(self, '_dropped_count'):
+                        self._dropped_count = 0
+                    self._dropped_count += 1
+                    if self._dropped_count % 1000 == 0:
+                        print(f"UDP debug: dropped {self._dropped_count} messages (queue full)")
                 except queue.Empty:
                     pass
         except Exception:
@@ -2445,6 +2450,13 @@ def main():
         emu.udp_debug = UdpDebugLogger(port=args.udp_debug_port, host=args.udp_debug_host)
         emu.udp_debug.enable()
         print(f"UDP debug logging enabled (async): {args.udp_debug_host}:{args.udp_debug_port}")
+        # Test UDP connection
+        try:
+            test_msg = {'type': 'test', 'message': 'UDP debug initialized'}
+            emu.udp_debug.send('test', test_msg)
+            print("UDP test message sent successfully")
+        except Exception as e:
+            print(f"UDP test failed: {e}")
     
     # Pass UDP debug logger to memory
     if emu.udp_debug:
