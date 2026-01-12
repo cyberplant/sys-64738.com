@@ -670,6 +670,7 @@ class CPU6502:
             carry = 1 if self._get_flag(0x01) else 0
             result = self.state.a - value - (1 - carry)
             self._set_flag(0x01, result >= 0)
+            self._set_flag(0x40, ((self.state.a ^ value) & 0x80) != 0 and ((self.state.a ^ result) & 0x80) != 0)
             self.state.a = result & 0xFF
             self._update_flags(self.state.a)
             self.state.pc = (self.state.pc + 3) & 0xFFFF
@@ -937,6 +938,16 @@ class CPU6502:
         elif opcode == 0xEA:  # NOP
             self.state.pc = (self.state.pc + 1) & 0xFFFF
             return 2
+        # NOP variants (documented and undocumented)
+        elif opcode in [0x80, 0x82, 0x89, 0xC2, 0xE2]:  # NOP imm (documented - consume 1 byte operand)
+            self.state.pc = (self.state.pc + 2) & 0xFFFF
+            return 2
+        elif opcode in [0x04, 0x44, 0x64]:  # NOP zp (undocumented - consume 1 byte operand)
+            self.state.pc = (self.state.pc + 2) & 0xFFFF
+            return 3
+        elif opcode in [0x14, 0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC]:  # NOP absx (undocumented - consume 2 byte operand)
+            self.state.pc = (self.state.pc + 3) & 0xFFFF
+            return 4
         elif opcode == 0x24:  # BIT zp
             return self._bit_zp()
         elif opcode == 0x2C:  # BIT abs
@@ -1218,6 +1229,8 @@ class CPU6502:
         carry = 1 if self._get_flag(0x01) else 0
         result = self.state.a - value - (1 - carry)
         self._set_flag(0x01, result >= 0)
+        # Set overflow flag
+        self._set_flag(0x40, ((self.state.a ^ value) & 0x80) != 0 and ((self.state.a ^ result) & 0x80) != 0)
         self.state.a = result & 0xFF
         self._update_flags(self.state.a)
         self.state.pc = (self.state.pc + 2) & 0xFFFF
@@ -1871,6 +1884,12 @@ class C64Emulator:
         # Initialize stack pointer
         self.cpu.state.sp = 0xFF
         
+        # Initialize zero-page variables used by KERNAL
+        # $C3-$C4: Temporary pointer used by vector copy routine
+        # Typically initialized to point to RAM vector area (0x0314)
+        self.memory.ram[0xC3] = 0x14  # Temporary pointer (low)
+        self.memory.ram[0xC4] = 0x03  # Temporary pointer (high) - points to $0314
+        
         # Initialize some zero-page variables
         self.memory.ram[0x0288] = 0x0E  # Cursor color (light blue)
         self.memory.ram[0x0286] = 0x0E  # Background color (light blue)
@@ -1905,6 +1924,11 @@ class C64Emulator:
         
         # Initialize keyboard buffer
         self.memory.ram[0xC6] = 0  # Number of characters in buffer
+        
+        # Initialize zero-page status register $6C (used by KERNAL error handler)
+        # This is typically initialized to 0 on boot
+        # The KERNAL checks this at $FE6E with SBC $6C - if result is 0, it halts
+        self.memory.ram[0x6C] = 0  # Status register (typically 0 = no error)
         
         # Initialize KERNAL vectors to defaults
         # These are typically set by KERNAL during boot, but we initialize them here
