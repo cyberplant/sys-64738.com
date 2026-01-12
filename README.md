@@ -57,6 +57,16 @@ You can load a program programmatically using the browser console:
 loadProgramFromUrl('https://example.com/path/to/program.prg', 'My Program');
 ```
 
+## PRG Decompiler (BASIC + 6502)
+
+To analyze/diff compiled PRGs, use:
+
+```bash
+python3 tools/prg_decompile.py programs/main.prg
+python3 tools/prg_decompile.py programs/main.prg --mode basic
+python3 tools/prg_decompile.py programs/main.prg --mode disasm --start 0x1000 --length 256
+```
+
 ## File Structure
 
 - `index.html` - Main HTML file with emulator container
