@@ -549,7 +549,7 @@ def _find_zero_gaps(data: bytes, base_addr: int, start_off: int, gap_threshold: 
     return gaps
 
 
-def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
+def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False) -> List[str]:
     """
     Emit ACME-friendly output with:
     - * = $ADDR segment starts
@@ -575,6 +575,8 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
     used_zp: set[int] = set()
     first_code_addr: Optional[int] = None
     jmp_edges: List[Tuple[int, int]] = []  # (src, dst)
+    refs_abs: Dict[int, List[Tuple[int, str, str]]] = {}  # target -> [(src, mnemonic, mode)]
+    sprite_ptr_map: Dict[int, int] = {}  # sprite_data_addr -> sprite_index
 
     def mark_target(addr: int, kind: str) -> None:
         addr &= 0xFFFF
@@ -607,6 +609,7 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
     next_gap = next(gap_iter, None)
 
     i = scan_i
+    last_imm_a: Optional[int] = None
     while i < len(data):
         addr = base + i
         if next_gap and addr == next_gap[0]:
@@ -638,10 +641,24 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
         if first_code_addr is None and op != 0x00:
             first_code_addr = addr
 
+        # Track A immediate loads (for sprite pointer heuristics).
+        if info.mnemonic == "LDA" and info.mode == "imm":
+            last_imm_a = raw[1]
+
         if info.mode in ("abs", "absx", "absy", "ind"):
-            used_abs.add(raw[1] | (raw[2] << 8))
+            tgt = raw[1] | (raw[2] << 8)
+            used_abs.add(tgt)
+            refs_abs.setdefault(tgt, []).append((addr, info.mnemonic, info.mode))
         if info.mode in ("zp", "zpx", "zpy", "indx", "indy"):
             used_zp.add(raw[1])
+
+        # Sprite pointer heuristic: LDA #$C0 ; STA $07F8 => sprite data at $C0*64 (= $3000).
+        if info.mnemonic == "STA" and info.mode == "abs" and last_imm_a is not None:
+            tgt = raw[1] | (raw[2] << 8)
+            if tgt in (0x07F8, 0x07F9):
+                spr_idx = tgt - 0x07F8
+                sprite_data_addr = (last_imm_a & 0xFF) * 64
+                sprite_ptr_map.setdefault(sprite_data_addr & 0xFFFF, spr_idx)
 
         if info.mnemonic == "JSR" and info.mode == "abs":
             mark_target(raw[1] | (raw[2] << 8), "jsr")
@@ -678,6 +695,40 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
                 return True
         return False
 
+    # Data labels (created lazily during output)
+    data_labels: Dict[int, str] = {}
+    used_data_names: set[str] = set()
+
+    def alloc_data_label(addr_val: int, kind: str) -> str:
+        addr_val &= 0xFFFF
+        if addr_val in label_names:
+            return label_names[addr_val]
+        if addr_val in data_labels:
+            return data_labels[addr_val]
+
+        base_name: str
+        if kind == "text":
+            refs = refs_abs.get(addr_val, [])
+            if any(m == "LDA" and mode in ("absx", "absy") for (_s, m, mode) in refs):
+                base_name = "msg_text"
+            else:
+                base_name = "text"
+        elif kind == "sprite":
+            spr_idx = sprite_ptr_map.get(addr_val)
+            if spr_idx is not None:
+                base_name = f"sprite{spr_idx}_data"
+            else:
+                base_name = "sprite_data"
+        else:
+            base_name = "data"
+
+        name = base_name
+        if name in used_data_names:
+            name = f"{base_name}_{addr_val:04X}"
+        used_data_names.add(name)
+        data_labels[addr_val] = name
+        return name
+
     def sym_for_abs(v: int) -> str:
         v &= 0xFFFF
         if v in KNOWN_KERNAL_SYMBOLS:
@@ -686,6 +737,8 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
             return KNOWN_C64_SYMBOLS_EXACT[v]
         if v in label_names:
             return label_names[v]
+        if v in data_labels:
+            return data_labels[v]
         # common RAM areas
         if 0x0400 <= v <= 0x07E7:
             return f"SCREEN+${v-0x0400:04X}".replace("$0000", "$0000").replace("+$0000", "")
@@ -853,6 +906,55 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
         used_names.add(new_name)
     label_addrs = set(label_names.keys())
 
+    # --- Instruction explanation (optional verbose output) ---
+    def explain(mn: str, mode: str, operand_txt: str, addr_here: int, raw_bytes: bytes) -> str:
+        mn_u = mn.upper()
+        if mn_u == "NOP":
+            return "No OPeration"
+        if mn_u == "JMP":
+            return f"Jump to {operand_txt}"
+        if mn_u == "JSR":
+            return f"Jump to subroutine {operand_txt}"
+        if mn_u == "RTS":
+            return "Return from subroutine"
+        if mn_u == "RTI":
+            return "Return from interrupt"
+        if mn_u in ("LDA", "LDX", "LDY"):
+            reg = mn_u[-1]
+            return f"Load {reg} with {operand_txt or '(implied)'}"
+        if mn_u in ("STA", "STX", "STY"):
+            reg = mn_u[-1]
+            return f"Store {reg} into {operand_txt}"
+        if mn_u in ("INX", "INY", "DEX", "DEY"):
+            return f"{mn_u} (increment/decrement index)"
+        if mn_u in ("CLC", "SEC"):
+            return "Clear/Set Carry flag"
+        if mn_u in ("CLI", "SEI"):
+            return "Clear/Set Interrupt Disable flag"
+        if mn_u in ("CLD", "SED"):
+            return "Clear/Set Decimal flag"
+        if mn_u in ("CMP", "CPX", "CPY"):
+            return f"Compare with {operand_txt}"
+        if mn_u.startswith("B") and mode == "rel":
+            branch_map = {
+                "BEQ": "Branch if Equal (Z=1)",
+                "BNE": "Branch if Not Equal (Z=0)",
+                "BCC": "Branch if Carry Clear (C=0)",
+                "BCS": "Branch if Carry Set (C=1)",
+                "BMI": "Branch if Minus (N=1)",
+                "BPL": "Branch if Plus (N=0)",
+                "BVC": "Branch if Overflow Clear (V=0)",
+                "BVS": "Branch if Overflow Set (V=1)",
+            }
+            return f"{branch_map.get(mn_u, 'Branch')} to {operand_txt}"
+        if mn_u in ("ASL", "LSR", "ROL", "ROR"):
+            return "Shift/rotate"
+        if mn_u in ("AND", "ORA", "EOR"):
+            return "Bitwise logic"
+        if mn_u in ("ADC", "SBC"):
+            return "Add/Subtract with Carry"
+        return ""
+
     # --- Actual output pass ---
     i = 0
     cur_addr = base
@@ -899,9 +1001,13 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
 
         if addr in label_names:
             out.append(f"{label_names[addr]}:")
+        elif addr in data_labels:
+            out.append(f"{data_labels[addr]}:")
 
         spr_len = _guess_sprite_block(data, i)
         if spr_len and not spans_label(addr, spr_len):
+            alloc_data_label(addr, "sprite")
+            out.append(f"{data_labels[addr]}:")
             out.append(f"; sprite data (guess): {spr_len} bytes")
             block = data[i:i + spr_len]
             for row in range(0, spr_len, 12):
@@ -923,6 +1029,8 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
                 ln, txt, has_nul = text_guess
                 total_len = ln + (1 if has_nul else 0)
                 if not spans_label(addr, total_len):
+                    alloc_data_label(addr, "text")
+                    out.append(f"{data_labels[addr]}:")
                     out.append(f'        !text "{_escape_acme_string(txt)}" ; {addr:04X}: {_fmt_bytes(data[i:i+ln])}')
                     i += ln
                     cur_addr = base + i
@@ -991,7 +1099,9 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
             if c:
                 extra = f" ; {c}"
 
-        out.append(f"        {asm:<26} ; {addr:04X}: {_fmt_bytes(raw)}{extra}")
+        desc = explain(info.mnemonic, info.mode, operand, addr, raw) if verbose else ""
+        desc_part = f" ; {desc}" if desc else ""
+        out.append(f"        {asm:<26} ; {addr:04X}: {_fmt_bytes(raw)}{extra}{desc_part}")
         i += size
         cur_addr = base + i
 
@@ -1005,6 +1115,7 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--start", default=None, help="Disasm start address (hex like 0x1000 or $1000 or decimal)")
     ap.add_argument("--length", type=int, default=None, help="Disasm byte length")
     ap.add_argument("--gap-threshold", type=int, default=128, help="ACME mode: compress $00 gaps >= this size")
+    ap.add_argument("-v", "--verbose", action="store_true", help="ACME mode: add extra explanatory comments per instruction")
     args = ap.parse_args(argv)
 
     prg = read_prg(args.prg)
@@ -1040,7 +1151,7 @@ def main(argv: List[str]) -> int:
         return 0
 
     if mode == "acme":
-        lines = decompile_acme(prg, gap_threshold=args.gap_threshold)
+        lines = decompile_acme(prg, gap_threshold=args.gap_threshold, verbose=args.verbose)
         for l in lines:
             print(l)
         return 0
