@@ -2119,6 +2119,7 @@ class C64Emulator:
         cycles = 0
         last_pc = None
         stuck_count = 0
+        pc_history = []  # Track recent PCs for debugging
         
         # Start screen update thread
         self.screen_update_thread = threading.Thread(target=self._screen_update_worker, daemon=True)
@@ -2137,6 +2138,7 @@ class C64Emulator:
         last_cycle_check = 0
         
         while self.running and cycles < max_cycles:
+            pc = self.cpu.state.pc
             step_cycles = self.cpu.step(self.udp_debug)
             cycles += step_cycles
             
@@ -2169,6 +2171,9 @@ class C64Emulator:
             else:
                 stuck_count = 0
             last_pc = self.cpu.state.pc
+            pc_history.append(self.cpu.state.pc)
+            if len(pc_history) > 20:  # Keep last 20 PCs
+                pc_history.pop(0)
             
             # Periodic status logging (less frequent to avoid overhead)
             if self.debug and cycles % 100000 == 0:
@@ -2188,6 +2193,32 @@ class C64Emulator:
                     'sp': state['sp'],
                     'p': state['p']
                 })
+
+            # Debug: Log when entering key boot routines
+            if self.debug and pc in [0xFDA3, 0xFD50, 0xFD15, 0xFF5B]:
+                routine_name = {
+                    0xFDA3: "IOINIT",
+                    0xFD50: "RAMTAS",
+                    0xFD15: "RESTOR",
+                    0xFF5B: "CINT"
+                }.get(pc, "UNKNOWN")
+                print(f"🔧 ENTERING {routine_name} at cycle {cycles}, PC=${pc:04X}")
+
+            # Debug: Log when PC reaches dangerous areas
+            if self.debug and pc == 0x0000:
+                print(f"🚨 DANGER: PC reached $0000 at cycle {cycles}")
+                # Show recent PC history
+                print(f"   Recent PCs: {[f'${p:04X}' for p in pc_history[-10:]]}")
+
+            # Debug: Log RTS from boot routines
+            if self.debug and pc == 0x60 and last_pc in [0xFDA3, 0xFD50, 0xFD15, 0xFF5B]:  # RTS
+                routine_name = {
+                    0xFDA3: "IOINIT",
+                    0xFD50: "RAMTAS",
+                    0xFD15: "RESTOR",
+                    0xFF5B: "CINT"
+                }.get(last_pc, "UNKNOWN")
+                print(f"✅ COMPLETED {routine_name} at cycle {cycles}")
         
         # Determine stop reason
         stop_reason = "unknown"
