@@ -468,6 +468,19 @@ KNOWN_C64_SYMBOLS_EXACT: Dict[int, str] = {
     0x07F9: "SPR_PTR1",
 }
 
+KNOWN_KERNAL_SYMBOLS: Dict[int, str] = {
+    0xFFD2: "CHROUT",
+    0xFFE4: "GETIN",
+    0xFFCF: "CHRIN",
+    0xFFBA: "SETLFS",
+    0xFFBD: "SETNAM",
+    0xFFC0: "OPEN",
+    0xFFC3: "CLOSE",
+    0xFFC6: "CHKIN",
+    0xFFC9: "CHKOUT",
+    0xFFCC: "CLRCHN",
+}
+
 def comment_for_addr(v: int) -> Optional[str]:
     v &= 0xFFFF
     if v in KNOWN_C64_ADDRS:
@@ -560,6 +573,8 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
     targets: Dict[int, TargetInfo] = {}
     used_abs: set[int] = set()
     used_zp: set[int] = set()
+    first_code_addr: Optional[int] = None
+    jmp_edges: List[Tuple[int, int]] = []  # (src, dst)
 
     def mark_target(addr: int, kind: str) -> None:
         addr &= 0xFFFF
@@ -620,6 +635,9 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
             break
         raw = data[i:i + size]
 
+        if first_code_addr is None and op != 0x00:
+            first_code_addr = addr
+
         if info.mode in ("abs", "absx", "absy", "ind"):
             used_abs.add(raw[1] | (raw[2] << 8))
         if info.mode in ("zp", "zpx", "zpy", "indx", "indy"):
@@ -628,7 +646,9 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
         if info.mnemonic == "JSR" and info.mode == "abs":
             mark_target(raw[1] | (raw[2] << 8), "jsr")
         elif info.mnemonic == "JMP" and info.mode == "abs":
-            mark_target(raw[1] | (raw[2] << 8), "jmp")
+            tgt = raw[1] | (raw[2] << 8)
+            mark_target(tgt, "jmp")
+            jmp_edges.append((addr, tgt))
         elif info.mode == "rel":
             off = raw[1]
             if off >= 0x80:
@@ -643,13 +663,34 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
             label_names[a] = f"function_{a:04X}"
         else:
             label_names[a] = f"label_{a:04X}"
+    label_addrs = set(label_names.keys())
+
+    def spans_label(start_addr: int, length: int) -> bool:
+        if length <= 0:
+            return False
+        end_addr = (start_addr + length) & 0xFFFF
+        # We only care about linear regions inside the PRG; this is a best-effort check.
+        # (No wraparound expected in typical PRGs.)
+        if end_addr < start_addr:
+            return True
+        for a in label_addrs:
+            if start_addr <= a < end_addr:
+                return True
+        return False
 
     def sym_for_abs(v: int) -> str:
         v &= 0xFFFF
+        if v in KNOWN_KERNAL_SYMBOLS:
+            return KNOWN_KERNAL_SYMBOLS[v]
         if v in KNOWN_C64_SYMBOLS_EXACT:
             return KNOWN_C64_SYMBOLS_EXACT[v]
         if v in label_names:
             return label_names[v]
+        # common RAM areas
+        if 0x0400 <= v <= 0x07E7:
+            return f"SCREEN+${v-0x0400:04X}".replace("$0000", "$0000").replace("+$0000", "")
+        if 0xD800 <= v <= 0xDBE7:
+            return f"COLORRAM+${v-0xD800:04X}".replace("+$0000", "")
         # base+offset forms for common register blocks
         if 0xD000 <= v <= 0xD02E:
             return f"VIC+${v-0xD000:02X}"
@@ -671,9 +712,31 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
     out.append("")
 
     symbol_defs: List[str] = []
+    # Base symbols that should exist if any of their ranges are referenced.
+    if any(0xD000 <= a <= 0xD02E for a in used_abs):
+        symbol_defs.append(f"{'VIC':<10}= {_hex16(0xD000)}")
+    if any(0xD400 <= a <= 0xD418 for a in used_abs):
+        symbol_defs.append(f"{'SID':<10}= {_hex16(0xD400)}")
+    if any(0xDC00 <= a <= 0xDC0F for a in used_abs):
+        symbol_defs.append(f"{'CIA1':<10}= {_hex16(0xDC00)}")
+    if any(0x0400 <= a <= 0x07E7 for a in used_abs):
+        symbol_defs.append(f"{'SCREEN':<10}= {_hex16(0x0400)}")
+    if any(0xD800 <= a <= 0xDBE7 for a in used_abs):
+        symbol_defs.append(f"{'COLORRAM':<10}= {_hex16(0xD800)}")
+
+    # Exact symbols (only if referenced exactly)
     for addr_val, name in sorted(KNOWN_C64_SYMBOLS_EXACT.items(), key=lambda kv: kv[0]):
+        if addr_val in used_abs and name not in {s.split("=")[0].strip() for s in symbol_defs}:
+            symbol_defs.append(f"{name:<10}= {_hex16(addr_val)}")
+
+    # KERNAL vectors (only if referenced)
+    for addr_val, name in sorted(KNOWN_KERNAL_SYMBOLS.items(), key=lambda kv: kv[0]):
         if addr_val in used_abs:
             symbol_defs.append(f"{name:<10}= {_hex16(addr_val)}")
+
+    # Dedupe while preserving order
+    seen = set()
+    symbol_defs = [s for s in symbol_defs if not (s.split("=")[0].strip() in seen or seen.add(s.split("=")[0].strip()))]
     if symbol_defs:
         out.append("; C64 symbols (used)")
         out.extend(symbol_defs)
@@ -684,6 +747,111 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
         for b in sorted(used_zp):
             out.append(f"{sym_for_zp(b):<10}= {_hex(b)}")
         out.append("")
+
+    # Smarter label for the apparent entrypoint (best-effort)
+    if first_code_addr is not None:
+        if first_code_addr not in label_names:
+            label_names[first_code_addr] = "start"
+        else:
+            # If it was already a label/function, keep that name but also provide an alias comment.
+            pass
+    label_addrs = set(label_names.keys())
+
+    # Smarter label for the main loop (best-effort): first backward JMP target after start
+    if first_code_addr is not None:
+        backward = [(src, dst) for (src, dst) in jmp_edges if dst < src and dst in label_names]
+        backward.sort(key=lambda e: (e[1], e[0]))
+        if backward:
+            _src, dst = backward[0]
+            if dst != first_code_addr and label_names.get(dst, "").startswith("label_"):
+                label_names[dst] = "main_loop"
+                label_addrs = set(label_names.keys())
+
+    # Smarter function names: analyze each JSR target and rename when we can recognize patterns.
+    def analyze_routine(addr0: int, max_bytes: int = 256) -> Dict[str, bool]:
+        """
+        Best-effort static scan of a routine starting at addr0 until RTS/RTI or max_bytes.
+        Returns feature flags.
+        """
+        off = addr0 - base
+        if off < 0 or off >= len(data):
+            return {}
+        touched: set[int] = set()
+        writes: set[int] = set()
+        reads: set[int] = set()
+        i2 = off
+        end = min(len(data), off + max_bytes)
+        while i2 < end:
+            op = data[i2]
+            info = OPCODES.get(op)
+            if info is None:
+                break
+            size = info.size
+            if i2 + size > end:
+                break
+            raw = data[i2:i2 + size]
+            addr_here = (base + i2) & 0xFFFF
+            if info.mode in ("abs", "absx", "absy"):
+                v = raw[1] | (raw[2] << 8)
+                touched.add(v)
+                if info.mnemonic in ("STA", "STX", "STY", "INC", "DEC"):
+                    writes.add(v)
+                if info.mnemonic in ("LDA", "LDX", "LDY", "CMP", "BIT"):
+                    reads.add(v)
+            if info.mnemonic in ("RTS", "RTI"):
+                break
+            # Don't chase into other routines; just linear scan.
+            if info.mnemonic == "JMP" and info.mode == "abs":
+                break
+            if info.mnemonic == "JSR":
+                # keep scanning, but note it may continue
+                pass
+            i2 += size
+            # avoid infinite loops on self-branches (best-effort)
+            if (base + i2) == addr_here:
+                break
+
+        def any_in(r0: int, r1: int, s: set[int]) -> bool:
+            return any(r0 <= x <= r1 for x in s)
+
+        return {
+            "touch_vic": any_in(0xD000, 0xD02E, touched),
+            "touch_sid": any_in(0xD400, 0xD418, touched),
+            "touch_cia1": any_in(0xDC00, 0xDC0F, touched),
+            "writes_border_bg": (0xD020 in writes) or (0xD021 in writes),
+            "writes_sprite_regs": any_in(0x07F8, 0x07FF, writes) or any_in(0xD015, 0xD02E, writes),
+            "writes_screen": any_in(0x0400, 0x07E7, writes) or any_in(0xD800, 0xDBE7, writes),
+        }
+
+    # Rename functions based on features
+    preferred: Dict[int, str] = {}
+    for a, ti in targets.items():
+        if not ti.jsr:
+            continue
+        feat = analyze_routine(a)
+        name = None
+        if feat.get("writes_border_bg") and feat.get("touch_vic"):
+            name = "init_screen"
+        elif feat.get("writes_sprite_regs"):
+            name = "init_sprites"
+        elif feat.get("touch_sid") and feat.get("touch_vic") and (0xD418 in used_abs):
+            name = "init_sound"
+        elif feat.get("touch_cia1"):
+            name = "read_input"
+        elif feat.get("writes_screen"):
+            name = "draw_text"
+        if name:
+            preferred[a] = name
+
+    # Apply preferred names, ensuring uniqueness
+    used_names = set(label_names.values())
+    for a, base_name in sorted(preferred.items(), key=lambda kv: kv[0]):
+        new_name = base_name
+        if new_name in used_names:
+            new_name = f"{base_name}_{a:04X}"
+        label_names[a] = new_name
+        used_names.add(new_name)
+    label_addrs = set(label_names.keys())
 
     # --- Actual output pass ---
     i = 0
@@ -733,7 +901,7 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
             out.append(f"{label_names[addr]}:")
 
         spr_len = _guess_sprite_block(data, i)
-        if spr_len:
+        if spr_len and not spans_label(addr, spr_len):
             out.append(f"; sprite data (guess): {spr_len} bytes")
             block = data[i:i + spr_len]
             for row in range(0, spr_len, 12):
@@ -753,14 +921,16 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
             text_guess = _guess_text(data, i, min_len=10)
             if text_guess:
                 ln, txt, has_nul = text_guess
-                out.append(f'        !text "{_escape_acme_string(txt)}" ; {addr:04X}: {_fmt_bytes(data[i:i+ln])}')
-                i += ln
-                cur_addr = base + i
-                if has_nul:
-                    out.append(f"        !byte $00{' ' * 34}; {cur_addr:04X}: 00")
-                    i += 1
+                total_len = ln + (1 if has_nul else 0)
+                if not spans_label(addr, total_len):
+                    out.append(f'        !text "{_escape_acme_string(txt)}" ; {addr:04X}: {_fmt_bytes(data[i:i+ln])}')
+                    i += ln
                     cur_addr = base + i
-                continue
+                    if has_nul:
+                        out.append(f"        !byte $00{' ' * 34}; {cur_addr:04X}: 00")
+                        i += 1
+                        cur_addr = base + i
+                    continue
 
             out.append(f"        !byte {_hex(op):<40} ; {addr:04X}: {op:02X}")
             i += 1
@@ -779,7 +949,8 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128) -> List[str]:
         if info.mode == "imp":
             operand = ""
         elif info.mode == "acc":
-            operand = "A"
+            # ACME accepts bare shifts/rotates as accumulator mode.
+            operand = ""
         elif info.mode == "imm":
             operand = f"#$%02X" % raw[1]
         elif info.mode == "zp":
