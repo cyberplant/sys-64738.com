@@ -80,12 +80,13 @@ class CIATimer:
             return False
 
         if self.input_mode == 0:  # Processor clock mode
+            original_counter = self.counter
             self.counter -= cycles
-            if self.counter <= 0:
+
+            # Check if we crossed zero (underflow occurred)
+            if original_counter > 0 and self.counter <= 0:
                 # Timer underflow - reload and generate interrupt
-                self.counter = self.latch + self.counter  # Handle partial cycle
-                if self.counter <= 0:
-                    self.counter = self.latch
+                self.counter = self.latch
 
                 if self.irq_enabled:
                     return True
@@ -2151,12 +2152,25 @@ class C64Emulator:
                     'p': state['p']
                 })
         
+        # Determine stop reason
+        stop_reason = "unknown"
+        if self.cpu.state.stopped:
+            stop_reason = "cpu_stopped"
+        elif cycles >= max_cycles:
+            stop_reason = "max_cycles_reached"
+        elif not self.running:
+            stop_reason = "stuck_pc"
+
         # Log end of execution
         if self.udp_debug and self.udp_debug.enabled:
             self.udp_debug.send('execution_end', {
                 'total_cycles': cycles,
                 'final_pc': self.cpu.state.pc,
-                'final_pc_hex': f'${self.cpu.state.pc:04X}'
+                'final_pc_hex': f'${self.cpu.state.pc:04X}',
+                'stop_reason': stop_reason,
+                'cpu_stopped': self.cpu.state.stopped,
+                'max_cycles': max_cycles,
+                'running': self.running
             })
         
         # Final screen update
