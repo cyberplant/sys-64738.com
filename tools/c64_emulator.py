@@ -564,20 +564,29 @@ class CPU6502:
                     self.memory.write(addr, 0x20)  # Space
                 cursor_addr = SCREEN_MEM
             else:
-                # Write character to screen (simple version)
+                # Write character to screen (convert PETSCII to screen code)
                 if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
-                    self.memory.write(cursor_addr, char)
+                    # Convert PETSCII to screen code for display
+                    screen_code = self._petscii_to_screen_code(char)
+                    self.memory.write(cursor_addr, screen_code)
                     cursor_addr += 1
-                    # Wrap to next line if at end of current line
-                    if (cursor_addr - SCREEN_MEM) % 40 == 0:
+
+                    # Check if we need to wrap to next line
+                    col = (cursor_addr - SCREEN_MEM) % 40
+                    if col == 0:  # Just wrapped to next line
                         row = (cursor_addr - SCREEN_MEM) // 40
-                        if row >= 25:
-                            cursor_addr = SCREEN_MEM  # Wrap to top
-                        # Else cursor_addr is already at start of next line
+                        if row >= 25:  # Off screen, wrap to top
+                            cursor_addr = SCREEN_MEM
             
             # Update cursor position
             self.memory.write(0xD1, cursor_addr & 0xFF)
             self.memory.write(0xD2, (cursor_addr >> 8) & 0xFF)
+
+            # Also update row and column variables
+            row = (cursor_addr - SCREEN_MEM) // 40
+            col = (cursor_addr - SCREEN_MEM) % 40
+            self.memory.write(0xD3, row)  # Cursor row
+            self.memory.write(0xD8, col)  # Cursor column
             
             # Return from JSR (RTS behavior)
             # On JSR: pushes (return_address - 1)
@@ -2837,6 +2846,30 @@ class C64Emulator:
         # Final screen update
         self._update_text_screen()
     
+    def _petscii_to_screen_code(self, petscii_char: int) -> int:
+        """Convert PETSCII character to C64 screen code"""
+        if petscii_char < 32:
+            # Control characters and symbols
+            return petscii_char
+        elif petscii_char < 64:
+            # A-Z, symbols
+            return petscii_char
+        elif petscii_char < 96:
+            # a-z (convert to screen codes 33-58)
+            return petscii_char - 64
+        elif petscii_char < 128:
+            # More symbols and graphics
+            return petscii_char - 32
+        elif petscii_char < 160:
+            # Reverse graphics
+            return petscii_char - 128
+        elif petscii_char < 192:
+            # More symbols
+            return petscii_char - 64
+        else:
+            # Uppercase graphics
+            return petscii_char - 128
+
     def _scroll_screen_up(self) -> None:
         """Scroll the screen up by one line"""
         # Move lines 1-24 up to positions 0-23
