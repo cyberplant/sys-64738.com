@@ -420,8 +420,9 @@ class CPU6502:
         self._set_flag(0x02, value == 0)  # Z flag
         self._set_flag(0x80, (value & 0x80) != 0)  # N flag
     
-    def step(self, udp_debug: Optional[UdpDebugLogger] = None) -> int:
+    def step(self, udp_debug: Optional[UdpDebugLogger] = None, current_cycles: int = 0) -> int:
         """Execute one instruction, return cycles"""
+        self.current_cycles = current_cycles
         if self.state.stopped:
             # If CPU is stopped (KIL), don't execute anything
             # Return 1 cycle to prevent infinite loops in the run loop
@@ -2605,9 +2606,7 @@ class C64Emulator:
             pc = self.cpu.state.pc
 
 
-            # Pass current cycle count to CPU for debugging
-            self.cpu.current_cycles = cycles
-            step_cycles = self.cpu.step(self.udp_debug)
+            step_cycles = self.cpu.step(self.udp_debug, cycles)
             cycles += step_cycles
             self.current_cycles = cycles
 
