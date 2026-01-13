@@ -32,7 +32,6 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static, Header, Footer
-from textual import events
 
 
 # C64 Memory Map Constants
@@ -2055,6 +2054,10 @@ class UdpDebugLogger:
 class TextualInterface(App):
     """Textual-based interface with TCSS styling"""
 
+    BINDINGS = [
+        ("ctrl+x", "quit", "Quit the emulator"),
+    ]
+
     CSS = """
     Screen {
         background: $surface;
@@ -3130,9 +3133,7 @@ def main():
             print("\nFinal Screen output:")
             print(emu.render_text_screen(no_colors=True))
     
-    # Stop Rich interface
-    if emu.rich_interface:
-        emu.rich_interface.stop()
+    # Textual interface handles its own cleanup
 
     # Stop screen update thread
     emu.running = False
