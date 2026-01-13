@@ -902,6 +902,10 @@ class CPU6502:
             return self._adc_zp()
         elif opcode == 0x6D:  # ADC abs
             return self._adc_abs()
+        elif opcode == 0x79:  # ADC abs,Y
+            return self._adc_absy()
+        elif opcode == 0x7D:  # ADC abs,X
+            return self._adc_absx()
         elif opcode == 0xE9:  # SBC imm
             return self._sbc_imm()
         elif opcode == 0xE5:  # SBC zp
@@ -1028,12 +1032,16 @@ class CPU6502:
             return self._asl_acc()
         elif opcode == 0x06:  # ASL zp
             return self._asl_zp()
+        elif opcode == 0x16:  # ASL zp,X
+            return self._asl_zpx()
         elif opcode == 0x0E:  # ASL abs
             return self._asl_abs()
         elif opcode == 0x4A:  # LSR acc
             return self._lsr_acc()
         elif opcode == 0x46:  # LSR zp
             return self._lsr_zp()
+        elif opcode == 0x56:  # LSR zp,X
+            return self._lsr_zpx()
         elif opcode == 0x4E:  # LSR abs
             return self._lsr_abs()
         elif opcode == 0x2A:  # ROL acc
@@ -1527,6 +1535,32 @@ class CPU6502:
         self._update_flags(self.state.a)
         self.state.pc = (self.state.pc + 3) & 0xFFFF
         return 4
+
+    def _adc_absx(self) -> int:
+        """ADC (Add with Carry) absolute,X"""
+        base = self._read_word(self.state.pc + 1)
+        addr = (base + self.state.x) & 0xFFFF
+        value = self.memory.read(addr)
+        carry = 1 if self._get_flag(0x01) else 0
+        result = self.state.a + value + carry
+        self._set_flag(0x01, result > 0xFF)
+        self.state.a = result & 0xFF
+        self._update_flags(self.state.a)
+        self.state.pc = (self.state.pc + 3) & 0xFFFF
+        return 4  # +1 cycle if page boundary crossed, but we'll ignore for simplicity
+
+    def _adc_absy(self) -> int:
+        """ADC (Add with Carry) absolute,Y"""
+        base = self._read_word(self.state.pc + 1)
+        addr = (base + self.state.y) & 0xFFFF
+        value = self.memory.read(addr)
+        carry = 1 if self._get_flag(0x01) else 0
+        result = self.state.a + value + carry
+        self._set_flag(0x01, result > 0xFF)
+        self.state.a = result & 0xFF
+        self._update_flags(self.state.a)
+        self.state.pc = (self.state.pc + 3) & 0xFFFF
+        return 4  # +1 cycle if page boundary crossed, but we'll ignore for simplicity
     
     def _sbc_imm(self) -> int:
         value = self.memory.read(self.state.pc + 1)
@@ -1784,6 +1818,17 @@ class CPU6502:
         self._update_flags(value)
         self.state.pc = (self.state.pc + 2) & 0xFFFF
         return 5
+
+    def _asl_zpx(self) -> int:
+        """ASL (Arithmetic Shift Left) zero-page,X"""
+        zp_addr = (self.memory.read(self.state.pc + 1) + self.state.x) & 0xFF
+        value = self.memory.read(zp_addr)
+        self._set_flag(0x01, (value & 0x80) != 0)  # Carry = bit 7
+        value = (value << 1) & 0xFF
+        self.memory.write(zp_addr, value)
+        self._update_flags(value)
+        self.state.pc = (self.state.pc + 2) & 0xFFFF
+        return 6
     
     def _asl_abs(self) -> int:
         addr = self._read_word(self.state.pc + 1)
@@ -1820,6 +1865,17 @@ class CPU6502:
         self.memory.write(addr, value)
         self._update_flags(value)
         self.state.pc = (self.state.pc + 3) & 0xFFFF
+        return 6
+
+    def _lsr_zpx(self) -> int:
+        """LSR (Logical Shift Right) zero-page,X"""
+        zp_addr = (self.memory.read(self.state.pc + 1) + self.state.x) & 0xFF
+        value = self.memory.read(zp_addr)
+        self._set_flag(0x01, (value & 0x01) != 0)  # Carry = bit 0
+        value = (value >> 1) & 0xFF
+        self.memory.write(zp_addr, value)
+        self._update_flags(value)
+        self.state.pc = (self.state.pc + 2) & 0xFFFF
         return 6
     
     def _rol_acc(self) -> int:
