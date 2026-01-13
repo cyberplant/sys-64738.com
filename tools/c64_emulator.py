@@ -2065,7 +2065,10 @@ class RichInterface:
     running: bool = True
 
     def __post_init__(self):
-        self.console = Console()  # Full width console
+        # Try with a fixed width to see if that helps with C64 pane sizing
+        import shutil
+        terminal_width = shutil.get_terminal_size().columns
+        self.console = Console(width=min(terminal_width, 120))  # Reasonable max width
         self.layout = Layout()
         # Layout: screen, debug, status (status at bottom)
         self.layout.split_column(
@@ -2073,7 +2076,8 @@ class RichInterface:
             Layout(name="debug", size=15),   # Debug logs - half height
             Layout(name="status", size=1)    # Status bar at bottom
         )
-        self.live = Live(self.layout, console=self.console, refresh_per_second=10)
+        # Reduce refresh rate to minimize flickering
+        self.live = Live(self.layout, console=self.console, refresh_per_second=2)
 
         # Start input handling thread
         self.input_thread = threading.Thread(target=self._input_handler, daemon=True)
@@ -2140,11 +2144,16 @@ class RichInterface:
     def update_screen(self, screen_content: str):
         """Update the screen content"""
         if self.layout:
-            self.layout["screen"].update(Panel(
+            # Use fit() but constrain width to prevent overflow
+            import shutil
+            terminal_width = shutil.get_terminal_size().columns
+            max_panel_width = min(terminal_width - 4, 120)  # Leave some margin
+            self.layout["screen"].update(Panel.fit(
                 screen_content,
                 title="🏠 C64 Display",
                 border_style="bright_blue",
-                padding=(0, 1)
+                padding=(0, 0),
+                width=max_panel_width
             ))
 
     def update_status(self):
@@ -2174,8 +2183,6 @@ class RichInterface:
     def start(self):
         """Start the live display"""
         if self.live:
-            # Clear the screen and start live display
-            print("\033[2J\033[H", end="")  # Clear screen and move cursor to top
             # Initialize all panels
             self.current_cycle = 0
             self.update_status()
@@ -2183,7 +2190,10 @@ class RichInterface:
             self.update_debug()
             self.live.start()
         else:
-            print("Rich live display not initialized")
+            if self.emulator_ref and self.emulator_ref.rich_interface:
+                self.emulator_ref.rich_interface.add_debug_log("❌ Rich live display not initialized")
+            else:
+                print("Rich live display not initialized")
 
     def stop(self):
         """Stop the live display"""
@@ -2482,7 +2492,7 @@ class C64Emulator:
                 # Update Rich debug panel
                 if self.rich_interface:
                     self.rich_interface.update_debug()
-                    self.rich_interface.refresh()
+                    # Don't manually refresh - let Live handle it automatically
 
                 time.sleep(self.screen_update_interval)
             except Exception as e:
