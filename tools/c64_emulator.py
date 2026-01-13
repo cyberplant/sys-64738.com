@@ -27,8 +27,10 @@ from datetime import datetime
 
 import threading
 import time
+from rich.console import Console
+from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static, Header, Footer
 from textual import events
 
@@ -2056,29 +2058,29 @@ class TextualInterface(App):
     CSS = """
     Screen {
         background: $surface;
+        layout: vertical;
     }
 
     #c64-display {
         border: solid $primary;
-        height: 20;
-        width: 42;
         margin: 0 1;
         padding: 0;
+        height: 12;
     }
 
     #debug-panel {
         border: solid $secondary;
-        height: 15;
         margin: 0 1;
         overflow-y: scroll;
         padding: 0 1;
+        height: 6;
     }
 
     #status-bar {
         border: solid $accent;
-        height: 1;
         margin: 0 1;
         padding: 0 1;
+        height: 2;
     }
     """
 
@@ -2097,10 +2099,9 @@ class TextualInterface(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Vertical():
-            yield Static("Loading C64...", id="c64-display")
-            yield Static("", id="debug-panel")
-            yield Static("Initializing...", id="status-bar")
+        yield Static("Loading C64...", id="c64-display")
+        yield Static("", id="debug-panel")
+        yield Static("Initializing...", id="status-bar")
         yield Footer()
 
     def on_mount(self):
@@ -2108,6 +2109,9 @@ class TextualInterface(App):
         self.c64_display = self.query_one("#c64-display", Static)
         self.debug_logs = self.query_one("#debug-panel", Static)
         self.status_bar = self.query_one("#status-bar", Static)
+
+        # Debug: check if widgets are found
+        self.add_debug_log(f"Widgets found: c64={self.c64_display is not None}, debug={self.debug_logs is not None}, status={self.status_bar is not None}")
 
         # Display any buffered messages
         if self.debug_logs and self.debug_messages:
@@ -2141,7 +2145,10 @@ class TextualInterface(App):
             # Update status
             emu = self.emulator
             status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Ctrl+X: Quit"
-            self.status_bar.update(status_text)
+            if self.status_bar:
+                self.status_bar.update(status_text)
+                # Debug: add to debug log too
+                self.add_debug_log(f"Status updated: {status_text}")
 
     def add_debug_log(self, message: str):
         """Add a debug message"""
@@ -2155,13 +2162,27 @@ class TextualInterface(App):
         if self.debug_logs:
             self.debug_logs.update("\n".join(self.debug_messages[-12:]))
 
-    async def on_key(self, event: events.Key):
+    def update_screen(self, screen_content: str):
+        """Stub method for compatibility - Textual updates automatically"""
+        pass
+
+    def update_status(self):
+        """Stub method for compatibility - Textual updates automatically"""
+        pass
+
+    def check_input(self):
+        """Stub method for compatibility - Textual handles input automatically"""
+        return False
+
+    def on_key(self, event: events.Key):
         """Handle key presses"""
         if event.key == "ctrl+x":
             self.running = False
             if self.emulator:
                 self.emulator.running = False
             self.exit()
+        # Don't consume the event, let it bubble up
+        return super().on_key(event)
 
 class C64Emulator:
     """Main C64 emulator"""
@@ -2423,10 +2444,7 @@ class C64Emulator:
                 self._update_text_screen()
                 update_count += 1
 
-                # Update Rich interface screen
-                if self.rich_interface and not self.no_colors:
-                    screen_content = self.render_text_screen(no_colors=False)
-                    self.rich_interface.update_screen(screen_content)
+                # Textual interface updates screen automatically, no manual updates needed
 
                 # Show screen summary periodically when debug is enabled
                 if hasattr(self, 'debug') and self.debug and update_count % 10 == 0:
@@ -2490,18 +2508,7 @@ class C64Emulator:
             step_cycles = self.cpu.step(self.udp_debug)
             cycles += step_cycles
 
-            # Update Rich interface status
-            if self.rich_interface:
-                self.rich_interface.current_cycle = cycles
-                if cycles % 100 == 0:  # Update status every 100 cycles
-                    self.rich_interface.update_status()
-                    # Check for keyboard input
-                    if self.rich_interface.check_input():
-                        break
-
-            # Debug: Log PC after CLI
-            if pc == 0xFCFE:  # Just executed CLI
-                print(f"📍 After CLI step: new PC=\\${self.cpu.state.pc:04X}, cycles={cycles}")
+            # Textual interface updates automatically, no manual updates needed
             
             # Calculate cycles per second periodically
             if cycles - last_cycle_check >= 100000:
