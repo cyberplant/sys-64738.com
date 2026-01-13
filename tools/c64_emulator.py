@@ -571,6 +571,9 @@ class CPU6502:
             if cursor_addr < SCREEN_MEM or cursor_addr >= SCREEN_MEM + 1000:
                 cursor_addr = SCREEN_MEM
             
+            # Track last character for loop detection
+            self.last_chrout_char = char
+
             # Minimal CHROUT implementation to avoid loops
             if char == 0x0D:  # Carriage return
                 # Move to next line, scroll if at bottom
@@ -583,6 +586,14 @@ class CPU6502:
                     self.memory._scroll_screen_up()
                     # Cursor stays at bottom row (24) after scroll
                     cursor_addr = SCREEN_MEM + 24 * 40
+
+                # Reset consecutive CR counter on successful CR
+                if hasattr(self, 'interface') and self.interface:
+                    self.interface.consecutive_cr_count = 0
+            else:
+                # Reset consecutive CR counter on non-CR characters
+                if hasattr(self, 'interface') and self.interface:
+                    self.interface.consecutive_cr_count = 0
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space
@@ -2205,6 +2216,7 @@ class TextualInterface(App):
             max_cycles = self.max_cycles
             last_pc = None
             stuck_count = 0
+            consecutive_cr_count = 0  # Track consecutive CR calls
 
             while self.emulator.running:
                 if cycles >= max_cycles:
@@ -2227,6 +2239,16 @@ class TextualInterface(App):
                 else:
                     stuck_count = 0
                 last_pc = pc
+
+                # Detect excessive consecutive CR calls (potential infinite loop)
+                if hasattr(self.emulator.cpu, 'last_chrout_char') and self.emulator.cpu.last_chrout_char == 0x0D:
+                    self.consecutive_cr_count += 1
+                    if self.consecutive_cr_count > 50:  # Allow some CRs but not infinite
+                        self.add_debug_log(f"⚠️ Detected {self.consecutive_cr_count} consecutive CR calls - possible infinite loop, stopping")
+                        self.emulator.running = False
+                        break
+                else:
+                    self.consecutive_cr_count = 0
 
                 # Simple stuck detection
                 #if cycles % 10000 == 0:
