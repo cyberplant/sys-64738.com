@@ -25,16 +25,11 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
-try:
-    from rich.console import Console
-    from rich.text import Text
-    from rich.panel import Panel
-    from rich.layout import Layout
-    from rich.live import Live
-    from rich.columns import Columns
-    RICH_AVAILABLE = True
-except ImportError:
-    RICH_AVAILABLE = False
+from rich.console import Console
+from rich.text import Text
+from rich.panel import Panel
+from rich.layout import Layout
+from rich.live import Live
 
 
 # C64 Memory Map Constants
@@ -2051,23 +2046,21 @@ class RichInterface:
     live: Optional['Live'] = None
     layout: Optional['Layout'] = None
     debug_logs: List[str] = field(default_factory=list)
-    max_logs: int = 50  # Maximum debug logs to keep
+    max_logs: int = 100  # Maximum debug logs to keep
+    current_cycle: int = 0
+    emulator_ref: Optional[Any] = None  # Reference to emulator for status
 
     def __post_init__(self):
-        if RICH_AVAILABLE:
-            try:
-                self.console = Console()
-                self.layout = Layout()
-                self.layout.split_column(
-                    Layout(name="screen", ratio=3),
-                    Layout(name="debug", size=10)
-                )
-                self.live = Live(self.layout, console=self.console, refresh_per_second=4)
-            except Exception as e:
-                print(f"Failed to initialize Rich interface: {e}")
-                self.console = None
-                self.layout = None
-                self.live = None
+        self.console = Console()
+        self.layout = Layout()
+        # Create a more complex layout with status bar and full-width panels
+        self.layout.split_column(
+            Layout(name="status", size=2),
+            Layout(name="screen", ratio=2),
+            Layout(name="debug", size=8),
+            Layout(name="buttons", size=2)
+        )
+        self.live = Live(self.layout, console=self.console, refresh_per_second=10)
 
     def add_debug_log(self, message: str):
         """Add a debug message to the log"""
@@ -2081,19 +2074,42 @@ class RichInterface:
         if self.layout:
             self.layout["screen"].update(Panel.fit(
                 screen_content,
-                title="C64 Screen Output",
-                border_style="blue",
+                title="🏠 C64 Display",
+                border_style="bright_blue",
                 padding=(0, 1)
             ))
+
+    def update_status(self):
+        """Update the status bar"""
+        if self.layout:
+            if self.emulator_ref:
+                emu = self.emulator_ref
+                status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X}"
+            else:
+                status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | Initializing..."
+            # Use Text instead of Panel for simpler display
+            from rich.text import Text
+            status_display = Text(status_text, style="bold yellow")
+            self.layout["status"].update(status_display)
 
     def update_debug(self):
         """Update the debug panel"""
         if self.layout:
-            debug_content = "\n".join(self.debug_logs[-10:])  # Show last 10 logs
+            debug_content = "\n".join(self.debug_logs[-8:])  # Show last 8 logs
             self.layout["debug"].update(Panel.fit(
                 debug_content or "No debug messages yet...",
-                title=f"Debug Logs ({len(self.debug_logs)} total)",
+                title="📋 Debug Logs",
                 border_style="green",
+                padding=(0, 1)
+            ))
+
+    def update_buttons(self):
+        """Update the button bar"""
+        if self.layout:
+            button_text = " [Q] Quit | [R] Reset | [S] Step | [Space] Pause/Resume "
+            self.layout["buttons"].update(Panel.fit(
+                button_text,
+                border_style="red",
                 padding=(0, 1)
             ))
 
@@ -2101,9 +2117,16 @@ class RichInterface:
         """Start the live display"""
         if self.live:
             # Clear the screen and start live display
-            self.console.clear()
+            print("\033[2J\033[H", end="")  # Clear screen and move cursor to top
+            # Initialize all panels
+            self.current_cycle = 0
+            self.update_status()
+            self.update_screen("Loading C64...")
+            self.update_debug()
+            self.update_buttons()
             self.live.start()
-        # Don't print debug messages that interfere with the display
+        else:
+            print("Rich live display not initialized")
 
     def stop(self):
         """Stop the live display"""
@@ -2424,6 +2447,12 @@ class C64Emulator:
             step_cycles = self.cpu.step(self.udp_debug)
             cycles += step_cycles
 
+            # Update Rich interface status
+            if self.rich_interface:
+                self.rich_interface.current_cycle = cycles
+                if cycles % 100 == 0:  # Update status every 100 cycles
+                    self.rich_interface.update_status()
+
             # Debug: Log PC after CLI
             if pc == 0xFCFE:  # Just executed CLI
                 print(f"📍 After CLI step: new PC=\\${self.cpu.state.pc:04X}, cycles={cycles}")
@@ -2552,7 +2581,8 @@ class C64Emulator:
                 print(f"   About to set PC to \\${jump_target:04X}")
                 print(f"   A000 content: \\${a000_low:02X} \\${a000_high:02X}")
             elif pc >= 0xFCFE and pc <= 0xFD02:  # Log all instructions in boot cleanup
-                print(f"📍 Boot cleanup: PC=\\${pc:04X}, opcode=\\${self.memory.read(pc):02X}, cycle {cycles}")
+                if not self.rich_interface:  # Only print if Rich interface is not active
+                    print(f"📍 Boot cleanup: PC=\\${pc:04X}, opcode=\\${self.memory.read(pc):02X}, cycle {cycles}")
 
             # Debug: Track entry to BASIC
             if pc == 0xE394:  # BASIC cold start entry point
@@ -2652,10 +2682,10 @@ class C64Emulator:
     
     def render_text_screen(self, no_colors: bool = False) -> str:
         """Render text screen as colored string (thread-safe)"""
-        if RICH_AVAILABLE and not no_colors:
+        if not no_colors:
             return self._render_with_rich()
         else:
-            return self._render_with_ansi(no_colors)
+            return self._render_with_ansi()
 
     def _render_with_rich(self) -> str:
         """Render screen using Rich library for better formatting"""
@@ -2972,8 +3002,13 @@ def main():
     emu.memory.video_standard = args.video_standard
     print(f"Video standard: {args.video_standard.upper()}")
 
+    # Determine if Rich will be active
+    server_active = bool(args.tcp_port or args.udp_port)
+    rich_will_be_active = not server_active and not args.no_colors
+
     # Load ROMs
-    print("Loading ROMs...")
+    if not rich_will_be_active:
+        print("Loading ROMs...")
     emu.load_roms(args.rom_dir)
 
     # Load PRG if provided
@@ -2997,15 +3032,17 @@ def main():
         server.start()
         print("Server started. Use commands like: STATUS, STEP, RUN, MEMORY, DUMP, SCREEN, LOAD")
         print("Press Ctrl+C to stop")
-    
-    # Start Rich interface if available and not in server mode
-    rich_active = not server and RICH_AVAILABLE and not args.no_colors
-    if rich_active:
-        emu.rich_interface.start()
-        emu.rich_interface.add_debug_log("C64 Emulator started")
-        emu.rich_interface.add_debug_log("Rich interface active")
+        server_active = True
     else:
-        print("Rich interface not available, using text mode")
+        server_active = False
+    
+    # Start Rich interface if not in server mode and colors enabled
+    rich_active = not server_active and not args.no_colors
+    if rich_active:
+        emu.rich_interface.emulator_ref = emu  # Give interface access to emulator
+        emu.rich_interface.start()
+        emu.rich_interface.add_debug_log("🚀 C64 Emulator started")
+        emu.rich_interface.add_debug_log("🎨 Rich interface active")
 
     # Run emulator
     try:
@@ -3034,11 +3071,11 @@ def main():
     
     # Show final screen (only if Rich was not used)
     if not server or not server.running:
-        if not (RICH_AVAILABLE and not args.no_colors):
-            # Only show final screen if Rich was not used
+        if args.no_colors:
+            # Only show final screen if colors are disabled
             emu._update_text_screen()
             print("\nFinal Screen output:")
-            print(emu.render_text_screen(no_colors=args.no_colors))
+            print(emu.render_text_screen(no_colors=True))
     
     # Stop Rich interface
     if emu.rich_interface:
