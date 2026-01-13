@@ -555,28 +555,25 @@ class CPU6502:
             
             # Handle special characters
             if char == 0x0D:  # Carriage return
-                # Move to start of next line
+                # Simple CR: move to next line, wrap around screen
                 row = (cursor_addr - SCREEN_MEM) // 40
                 row = (row + 1) % 25
                 cursor_addr = SCREEN_MEM + row * 40
-                # If we wrapped to row 0, scroll the screen up
-                if row == 0:
-                    self._scroll_screen_up()
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space
                 cursor_addr = SCREEN_MEM
             else:
-                # Write character to screen
+                # Write character to screen (simple version)
                 if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
                     self.memory.write(cursor_addr, char)
-                    cursor_addr = (cursor_addr + 1) & 0xFFFF
-                    # If we reached end of line, wrap to next line
+                    cursor_addr += 1
+                    # Wrap to next line if at end of current line
                     if (cursor_addr - SCREEN_MEM) % 40 == 0:
                         row = (cursor_addr - SCREEN_MEM) // 40
-                        if row >= 25:  # Off-screen, scroll up
-                            self._scroll_screen_up()
-                            cursor_addr = SCREEN_MEM + 24 * 40  # Back to start of last line
+                        if row >= 25:
+                            cursor_addr = SCREEN_MEM  # Wrap to top
+                        # Else cursor_addr is already at start of next line
             
             # Update cursor position
             self.memory.write(0xD1, cursor_addr & 0xFF)
@@ -2179,6 +2176,8 @@ class TextualInterface(App):
             self.emulator.running = True
             cycles = 0
             max_cycles = self.max_cycles
+            last_pc = None
+            stuck_count = 0
 
             while self.emulator.running:
                 if cycles >= max_cycles:
@@ -2190,16 +2189,33 @@ class TextualInterface(App):
                 cycles += step_cycles
                 self.emulator.current_cycles = cycles
 
+                # Stuck detection
+                pc = self.emulator.cpu.state.pc
+                if pc == last_pc:
+                    stuck_count += 1
+                    if stuck_count > 1000:
+                        self.add_debug_log(f"⚠️ PC stuck at ${pc:04X} for {stuck_count} steps - stopping")
+                        self.emulator.running = False
+                        break
+                else:
+                    stuck_count = 0
+                last_pc = pc
+
                 # Simple stuck detection
                 #if cycles % 10000 == 0:
                     #if hasattr(self.emulator, 'interface') and self.emulator.interface:
                         #self.emulator.interface.add_debug_log(f"🔄 Emulator progress: {cycles} cycles")
 
+            # Log why we stopped
+            if hasattr(self, 'add_debug_log'):
+                if cycles >= max_cycles:
+                    self.add_debug_log(f"🛑 Stopped at cycle {cycles} (reached max_cycles={max_cycles})")
+                else:
+                    self.add_debug_log(f"🛑 Stopped at cycle {cycles} (unknown reason, stuck_count={stuck_count})")
+
         except Exception as e:
             if hasattr(self, 'add_debug_log'):
                 self.add_debug_log(f"❌ Emulator error: {e}")
-            else:
-                print(f"❌ Emulator error: {e}")
 
     def _update_ui(self):
         """Update the UI periodically"""
