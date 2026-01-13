@@ -559,6 +559,9 @@ class CPU6502:
                 row = (cursor_addr - SCREEN_MEM) // 40
                 row = (row + 1) % 25
                 cursor_addr = SCREEN_MEM + row * 40
+                # If we wrapped to row 0, scroll the screen up
+                if row == 0:
+                    self._scroll_screen_up()
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space
@@ -568,9 +571,12 @@ class CPU6502:
                 if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
                     self.memory.write(cursor_addr, char)
                     cursor_addr = (cursor_addr + 1) & 0xFFFF
-                    # Wrap to next line if needed
-                    if cursor_addr >= SCREEN_MEM + 1000:
-                        cursor_addr = SCREEN_MEM
+                    # If we reached end of line, wrap to next line
+                    if (cursor_addr - SCREEN_MEM) % 40 == 0:
+                        row = (cursor_addr - SCREEN_MEM) // 40
+                        if row >= 25:  # Off-screen, scroll up
+                            self._scroll_screen_up()
+                            cursor_addr = SCREEN_MEM + 24 * 40  # Back to start of last line
             
             # Update cursor position
             self.memory.write(0xD1, cursor_addr & 0xFF)
@@ -2815,6 +2821,23 @@ class C64Emulator:
         # Final screen update
         self._update_text_screen()
     
+    def _scroll_screen_up(self) -> None:
+        """Scroll the screen up by one line"""
+        # Move lines 1-24 up to positions 0-23
+        for row in range(24):
+            src_addr = SCREEN_MEM + (row + 1) * 40
+            dst_addr = SCREEN_MEM + row * 40
+            for col in range(40):
+                char = self.memory.read(src_addr + col)
+                self.memory.write(dst_addr + col, char)
+
+        # Clear the bottom line (row 24)
+        for col in range(40):
+            self.memory.write(SCREEN_MEM + 24 * 40 + col, 0x20)  # Space
+
+        # Also scroll color memory if implemented
+        # For now, we'll skip color memory scrolling
+
     def _update_text_screen(self) -> None:
         """Update text screen from screen memory (thread-safe)"""
         screen_base = SCREEN_MEM
