@@ -596,8 +596,8 @@ class CPU6502:
                     cursor_addr = SCREEN_MEM + 24 * 40
 
                 # Reset consecutive CR counter on successful CR
-                #if hasattr(self, 'interface') and self.interface:
-                    #self.interface.consecutive_cr_count = 0
+                if hasattr(self, 'interface') and self.interface:
+                    self.interface.consecutive_cr_count = 0
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space
@@ -2209,8 +2209,10 @@ class TextualInterface(App):
         border: solid $primary;
         margin: 0 1;
         padding: 0;
-        height: 50%;
-        width: 100%;
+        height: 40fr;
+        width: 10fr;
+        background: #0000AA;
+        color: #FFFFFF;
     }
 
     #debug-panel {
@@ -2308,10 +2310,10 @@ class TextualInterface(App):
                 # Detect excessive consecutive CR calls (potential infinite loop)
                 if hasattr(self.emulator.cpu, 'last_chrout_char') and self.emulator.cpu.last_chrout_char == 0x0D:
                     self.consecutive_cr_count += 1
-                    if self.consecutive_cr_count > 50:  # Allow some CRs but not infinite
+                    if self.consecutive_cr_count > 500:  # Allow some CRs but not infinite
                         self.add_debug_log(f"⚠️ Detected {self.consecutive_cr_count} consecutive CR calls - possible infinite loop, stopping")
-                        self.emulator.running = False
-                        break
+                        #self.emulator.running = False
+                        #break
                 else:
                     self.consecutive_cr_count = 0
 
@@ -2345,10 +2347,18 @@ class TextualInterface(App):
 
             # Update screen display
             screen_content = self.emulator.render_text_screen(no_colors=False)
-            #self.add_debug_log(f"🎨 Rendering screen content (length: {len(screen_content)})")
-            if len(screen_content) > 0:
-                first_line = screen_content.split('\n')[0] if '\n' in screen_content else screen_content[:50]
-                #self.add_debug_log(f"🎨 First line: '{first_line}'")
+            
+            # Debug: Check if screen has any non-space content
+            non_space_count = sum(1 for c in screen_content if c not in (' ', '\n'))
+            if non_space_count > 0 and not hasattr(self, '_screen_debug_logged'):
+                # Sample first few characters from screen memory
+                sample_chars = []
+                for addr in range(SCREEN_MEM, SCREEN_MEM + 20):
+                    char_code = self.emulator.memory.read(addr)
+                    sample_chars.append(f"${char_code:02X}")
+                self.add_debug_log(f"📺 Screen has {non_space_count} non-space chars. First 20 bytes: {', '.join(sample_chars)}")
+                self._screen_debug_logged = True
+            
             # For RichLog, clear and write new content
             self.c64_display.clear()
             self.c64_display.write(screen_content)
@@ -3031,47 +3041,50 @@ class C64Emulator:
                     char_code = self.memory.read(addr)
                     color_code = self.memory.read(color_base + row * 40 + col) & 0x0F
 
-                # Convert C64 screen codes to ASCII
-                # C64 screen codes: PETSCII screen codes
-                if char_code == 0x00:
-                    char = '@'
-                elif 0x01 <= char_code <= 0x1A:
-                    char = chr(ord('A') + char_code - 1)
-                elif 0x1B <= char_code <= 0x1F:
-                    char = chr(ord('[') + char_code - 0x1B)  # [\]^_
-                elif char_code == 0x20:
-                    char = ' '
-                elif 0x21 <= char_code <= 0x2F:
-                    # Punctuation: ! " # $ % & ' ( ) * + , - . /
-                    punct = '!\"#$%&\'()*+,-./'
-                    if char_code <= 0x20 + len(punct) - 1:
-                        char = punct[char_code - 0x21]
+                    # Convert C64 screen codes to ASCII
+                    # C64 screen codes: PETSCII screen codes
+                    if char_code == 0x00:
+                        char = '@'
+                    elif 0x01 <= char_code <= 0x1A:
+                        char = chr(ord('A') + char_code - 1)
+                    elif 0x1B <= char_code <= 0x1F:
+                        char = chr(ord('[') + char_code - 0x1B)  # [\]^_
+                    elif char_code == 0x20:
+                        char = ' '
+                    elif 0x21 <= char_code <= 0x2F:
+                        # Punctuation: ! " # $ % & ' ( ) * + , - . /
+                        punct = '!\"#$%&\'()*+,-./'
+                        if char_code <= 0x20 + len(punct) - 1:
+                            char = punct[char_code - 0x21]
+                        else:
+                            char = chr(char_code)
+                    elif 0x30 <= char_code <= 0x39:
+                        char = chr(ord('0') + char_code - 0x30)
+                    elif 0x3A <= char_code <= 0x40:
+                        char = chr(char_code)  # : ; < = > ? @
+                    elif 0x41 <= char_code <= 0x5A:
+                        char = chr(char_code)  # A-Z
+                    elif 0x5B <= char_code <= 0x5F:
+                        char = chr(ord('[') + char_code - 0x5B)  # [\]^_
+                    elif char_code >= 0x60 and char_code <= 0x7E:
+                        char = chr(char_code - 0x60) if char_code - 0x60 <= 0x1F else chr(char_code)
+                    elif char_code == 0x7F:
+                        char = chr(0x7F)  # DEL
                     else:
-                        char = chr(char_code)
-                elif 0x30 <= char_code <= 0x39:
-                    char = chr(ord('0') + char_code - 0x30)
-                elif 0x3A <= char_code <= 0x40:
-                    char = chr(char_code)  # : ; < = > ? @
-                elif 0x41 <= char_code <= 0x5A:
-                    char = chr(char_code)  # A-Z
-                elif 0x5B <= char_code <= 0x5F:
-                    char = chr(ord('[') + char_code - 0x5B)  # [\]^_
-                elif char_code >= 0x60 and char_code <= 0x7E:
-                    char = chr(char_code - 0x60) if char_code - 0x60 <= 0x1F else chr(char_code)
-                elif char_code == 0x7F:
-                    char = chr(0x7F)  # DEL
-                else:
-                    char = ' '
+                        char = ' '
 
-                self.text_screen[row][col] = char
-                self.text_colors[row][col] = color_code
+                    self.text_screen[row][col] = char
+                    self.text_colors[row][col] = color_code
     
     def render_text_screen(self, no_colors: bool = False) -> str:
-        """Render text screen as colored string (thread-safe)"""
-        if not no_colors:
-            return self._render_with_rich()
-        else:
-            return self._render_with_ansi()
+        """Render text screen as simple white text on blue background"""
+        # Simple rendering: white text on blue background
+        with self.screen_lock:
+            lines = []
+            for row in range(25):
+                line = ''.join(self.text_screen[row])
+                lines.append(line)
+            return '\n'.join(lines)
 
     def _render_with_rich(self) -> str:
         """Render screen using Rich library for better formatting"""
