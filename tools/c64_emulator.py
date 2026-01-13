@@ -174,7 +174,14 @@ class MemoryMap:
 
         # Trigger screen update when screen or color memory changes
         if (0x0400 <= addr < 0x0800) or (0xD800 <= addr < 0xDC00):
-            # Screen or color memory changed - mark for update
+            # Screen or color memory changed - update immediately for Textual
+            if hasattr(self, 'interface') and self.interface:
+                # Update text screen from memory
+                self._update_text_screen()
+                # Debug: log screen memory writes
+                if hasattr(self, 'interface') and addr >= 0x0400 and addr < 0x0410:  # First 16 bytes
+                    if hasattr(self.interface, 'add_debug_log'):
+                        self.interface.add_debug_log(f"📺 Screen write: ${addr:04X} = ${value:02X}")
             pass  # The periodic update thread will handle this
         
         # ROM areas - writes go to RAM underneath
@@ -2468,6 +2475,14 @@ class C64Emulator:
                             if self.interface:
                                 self.interface.add_debug_log(line_msg)
 
+                    # Show raw screen memory sample
+                    screen_sample = []
+                    for i in range(16):
+                        screen_sample.append(f"{self.memory.read(0x0400 + i):02X}")
+                    mem_msg = f"💾 Screen mem ($0400): {' '.join(screen_sample)}"
+                    if self.interface:
+                        self.interface.add_debug_log(mem_msg)
+
                 # Update Textual debug panel (updates happen automatically in Textual)
 
                 time.sleep(self.screen_update_interval)
@@ -2752,7 +2767,36 @@ class C64Emulator:
 
     def _render_with_rich(self) -> str:
         """Render screen using Rich library for better formatting"""
-        # C64 color to Rich color mapping
+
+        # Read C64 colors from memory
+        background_color = self.memory.read(0xD021) & 0x0F  # Background color
+        border_color = self.memory.read(0xD020) & 0x0F      # Border color
+
+        # C64 color to ANSI 256 color mapping (better color approximation)
+        c64_to_ansi256 = {
+            0: 0,     # Black
+            1: 15,    # White
+            2: 196,   # Red
+            3: 51,    # Cyan
+            4: 129,   # Purple
+            5: 46,    # Green
+            6: 21,    # Blue
+            7: 226,   # Yellow
+            8: 208,   # Orange
+            9: 94,    # Brown
+            10: 201,  # Pink
+            11: 240,  # Dark grey
+            12: 250,  # Grey
+            13: 118,  # Light green
+            14: 39,   # Light blue
+            15: 252   # Light grey
+        }
+
+        # Get ANSI color codes
+        bg_ansi = c64_to_ansi256.get(background_color, 0)
+        border_ansi = c64_to_ansi256.get(border_color, 15)
+
+        # C64 color to Rich color mapping (fallback)
         c64_colors = {
             0: "black",      # Black
             1: "white",      # White
@@ -2799,30 +2843,66 @@ class C64Emulator:
 
     def _render_with_ansi(self, no_colors: bool = False) -> str:
         """Render text screen with ANSI colors (fallback)"""
-        # C64 color to ANSI color mapping
+
+        # Read C64 colors from memory
+        background_color = self.memory.read(0xD021) & 0x0F  # Background color
+        border_color = self.memory.read(0xD020) & 0x0F      # Border color
+
+        # C64 color to ANSI 256 color mapping
+        c64_to_ansi256 = {
+            0: 0,     # Black
+            1: 15,    # White
+            2: 196,   # Red
+            3: 51,    # Cyan
+            4: 129,   # Purple
+            5: 46,    # Green
+            6: 21,    # Blue
+            7: 226,   # Yellow
+            8: 208,   # Orange
+            9: 94,    # Brown
+            10: 201,  # Pink
+            11: 240,  # Dark grey
+            12: 250,  # Grey
+            13: 118,  # Light green
+            14: 39,   # Light blue
+            15: 252   # Light grey
+        }
+
+        # Get ANSI 256 color codes
+        bg_ansi = c64_to_ansi256.get(background_color, 0)
+        border_ansi = c64_to_ansi256.get(border_color, 15)
+
+        # Fallback ANSI color mapping for foreground
         c64_colors = {
             0: 30,   # Black
             1: 37,   # White
             2: 31,   # Red
             3: 36,   # Cyan
-            4: 32,   # Purple (mapped to green for visibility)
+            4: 35,   # Purple (magenta)
             5: 32,   # Green
             6: 34,   # Blue
             7: 33,   # Yellow
-            8: 31,   # Orange (mapped to red)
-            9: 35,   # Brown (mapped to magenta)
-            10: 35,  # Pink (mapped to magenta)
-            11: 36,  # Dark gray (mapped to cyan)
-            12: 37,  # Medium gray (mapped to white)
-            13: 32,  # Light green
-            14: 34,  # Light blue
-            15: 37   # Light gray (mapped to white)
+            8: 31,   # Orange (red)
+            9: 35,   # Brown (magenta)
+            10: 35,  # Pink (magenta)
+            11: 90,  # Dark gray
+            12: 37,  # Medium gray (white)
+            13: 92,  # Light green
+            14: 94,  # Light blue
+            15: 97   # Light gray
         }
 
         with self.screen_lock:
             lines = []
+            # Add border/background color to entire screen
+            bg_escape = f'\033[48;5;{bg_ansi}m' if not no_colors else ''
+            reset = '\033[0m' if not no_colors else ''
+
             for row in range(25):
                 line = []
+                if not no_colors:
+                    line.append(bg_escape)  # Background color for entire line
+
                 for col in range(40):
                     char = self.text_screen[row][col]
 
@@ -2830,10 +2910,14 @@ class C64Emulator:
                         line.append(char)
                     else:
                         color = self.text_colors[row][col]
-                        # Apply ANSI color
-                        ansi_color = c64_colors.get(color, 37)  # Default to white
-                        colored_char = f'\033[{ansi_color}m{char}\033[0m'
+                        # Apply ANSI 256 foreground color
+                        fg_ansi = c64_to_ansi256.get(color, 15)
+                        colored_char = f'\033[38;5;{fg_ansi}m{char}'
                         line.append(colored_char)
+
+                if not no_colors:
+                    line.append(reset)  # Reset colors at end of line
+
                 lines.append(''.join(line))
             return '\n'.join(lines)
     
