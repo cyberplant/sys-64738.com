@@ -561,15 +561,14 @@ class CPU6502:
         self._update_cia_timers(cycles)
 
         # Update VIC-II raster line (simulate video timing)
-        # PAL: 312 lines, 50Hz = ~63.7 cycles per line
-        # NTSC: 263 lines, 60Hz = ~63.4 cycles per line
-        cycles_per_line = 63
+        # For emulator purposes, increment raster line slowly so CINT can complete
+        # Real PAL: 312 lines at ~50Hz = ~63 cycles per line
+        # We'll increment every ~1000 cycles to make CINT finish reasonably
         self.memory.raster_cycles += cycles
-        raster_increment = self.memory.raster_cycles // cycles_per_line
-        if raster_increment > 0:
+        if self.memory.raster_cycles >= 1000:
             raster_max = 312 if self.memory.video_standard == "pal" else 263
-            self.memory.raster_line = (self.memory.raster_line + raster_increment) % raster_max
-            self.memory.raster_cycles %= cycles_per_line
+            self.memory.raster_line = (self.memory.raster_line + 1) % raster_max
+            self.memory.raster_cycles = 0
 
         # Check for pending IRQ (only if interrupts are enabled)
         if self.memory.pending_irq and not self._get_flag(0x04):  # I flag clear
@@ -792,6 +791,8 @@ class CPU6502:
             return self._ora_zp()
         elif opcode == 0x0D:  # ORA abs
             return self._ora_abs()
+        elif opcode == 0x19:  # ORA abs,Y
+            return self._ora_absy()
         elif opcode == 0x49:  # EOR imm
             return self._eor_imm()
         elif opcode == 0x45:  # EOR zp
@@ -888,6 +889,8 @@ class CPU6502:
             return self._ror_acc()
         elif opcode == 0x66:  # ROR zp
             return self._ror_zp()
+        elif opcode == 0x76:  # ROR zp,X
+            return self._ror_zpx()
         elif opcode == 0x6E:  # ROR abs
             return self._ror_abs()
         elif opcode == 0xFE:  # INC absx
@@ -1070,7 +1073,7 @@ class CPU6502:
         elif opcode == 0x2C:  # BIT abs
             return self._bit_abs()
         # Handle common undocumented opcodes as NOPs
-        elif opcode in [0x02, 0x03, 0x07, 0x0F, 0x12, 0x13, 0x1A, 0x1B, 0x1C, 0x1F, 0x22, 0x2F, 0x32, 0x34, 0x3A, 0x42, 0x43, 0x4B, 0x52, 0x5A, 0x5B, 0x5C, 0x62, 0x6B, 0x72, 0x7A, 0x80, 0x82, 0x8B, 0x8F, 0x9B, 0x9E, 0xA3, 0xAB, 0xAF, 0xB2, 0xBB, 0xBF, 0xC2, 0xC3, 0xCB, 0xD2, 0xD3, 0xDA, 0xDB, 0xDC, 0xDF, 0xE2, 0xE3, 0xEB, 0xEF, 0xF2, 0xF3, 0xFB, 0xFC, 0xFF]:
+        elif opcode in [0x02, 0x03, 0x07, 0x0B, 0x0F, 0x12, 0x13, 0x17, 0x1A, 0x1B, 0x1C, 0x1F, 0x22, 0x27, 0x2F, 0x32, 0x33, 0x34, 0x37, 0x3A, 0x3B, 0x3C, 0x3F, 0x42, 0x43, 0x47, 0x4B, 0x4F, 0x52, 0x53, 0x54, 0x57, 0x5A, 0x5B, 0x5C, 0x5F, 0x62, 0x63, 0x64, 0x67, 0x6B, 0x6F, 0x72, 0x73, 0x74, 0x77, 0x7A, 0x7B, 0x7C, 0x7F, 0x80, 0x82, 0x83, 0x87, 0x8B, 0x8F, 0x92, 0x93, 0x97, 0x9B, 0x9C, 0x9E, 0x9F, 0xA3, 0xA7, 0xAB, 0xAF, 0xB2, 0xB3, 0xB7, 0xBB, 0xBF, 0xC2, 0xC3, 0xC7, 0xCB, 0xCF, 0xD2, 0xD3, 0xD4, 0xD7, 0xDA, 0xDB, 0xDC, 0xDF, 0xE2, 0xE3, 0xE7, 0xEB, 0xEF, 0xF2, 0xF3, 0xF4, 0xF7, 0xFA, 0xFB, 0xFC, 0xFF]:
             # Undocumented opcode - treat as multi-byte NOP for compatibility
             # Most undocumented opcodes are 2-3 bytes
             self.state.pc = (self.state.pc + 2) & 0xFFFF  # Assume 2-byte for safety
@@ -1078,6 +1081,9 @@ class CPU6502:
         else:
             # Unknown opcode - halt CPU (like VICE does)
             print(f"CPU halted: Unknown opcode ${opcode:02X} at PC=${self.state.pc:04X}")
+            # Check if we're in CINT
+            if 0xFF5B <= self.state.pc <= 0xFFFF:
+                print(f"   This happened during CINT execution!")
             self.state.stopped = True
             return 0
     
@@ -1105,8 +1111,8 @@ class CPU6502:
     def _jsr_abs(self) -> int:
         """JSR absolute"""
         addr = self._read_word(self.state.pc + 1)
-        # Push return address (PC + 3) onto stack (address of next instruction)
-        return_addr = (self.state.pc + 3) & 0xFFFF
+        # Push return address (PC + 2) onto stack (address of next instruction - 1)
+        return_addr = (self.state.pc + 2) & 0xFFFF
         pc_high = return_addr >> 8
         pc_low = return_addr & 0xFF
         self.memory.write(0x100 + self.state.sp, pc_high)
@@ -1424,6 +1430,14 @@ class CPU6502:
         self._update_flags(self.state.a)
         self.state.pc = (self.state.pc + 3) & 0xFFFF
         return 4
+
+    def _ora_absy(self) -> int:
+        base = self._read_word(self.state.pc + 1)
+        addr = (base + self.state.y) & 0xFFFF
+        self.state.a |= self.memory.read(addr)
+        self._update_flags(self.state.a)
+        self.state.pc = (self.state.pc + 3) & 0xFFFF
+        return 4
     
     def _eor_imm(self) -> int:
         self.state.a ^= self.memory.read(self.state.pc + 1)
@@ -1689,6 +1703,18 @@ class CPU6502:
         self._update_flags(value)
         self.state.pc = (self.state.pc + 2) & 0xFFFF
         return 5
+
+    def _ror_zpx(self) -> int:
+        zp_addr = (self.memory.read(self.state.pc + 1) + self.state.x) & 0xFF
+        value = self.memory.read(zp_addr)
+        carry = 1 if self._get_flag(0x01) else 0
+        new_carry = (value & 0x01) != 0
+        value = ((value >> 1) | (carry << 7)) & 0xFF
+        self.memory.write(zp_addr, value)
+        self._set_flag(0x01, new_carry)
+        self._update_flags(value)
+        self.state.pc = (self.state.pc + 2) & 0xFFFF
+        return 6
     
     def _ror_abs(self) -> int:
         addr = self._read_word(self.state.pc + 1)
@@ -2195,14 +2221,6 @@ class C64Emulator:
         while self.running and cycles < max_cycles:
             pc = self.cpu.state.pc
 
-            # Force CINT completion if it takes too long (debugging)
-            if pc == 0xFF5B and cycles > 2040000:
-                print(f"⏰ CINT taking too long, forcing completion at cycle {cycles}")
-                # Simulate RTS: set PC to FCFE, adjust stack
-                self.cpu.state.pc = 0xFCFE
-                self.cpu.state.sp += 2
-                cycles += 1  # Count this as a cycle
-                continue
 
             step_cycles = self.cpu.step(self.udp_debug)
             cycles += step_cycles
@@ -2268,6 +2286,16 @@ class C64Emulator:
                     0xFF5B: "CINT"
                 }.get(pc, "UNKNOWN")
                 print(f"🔧 ENTERING {routine_name} at cycle {cycles}, PC=${pc:04X}")
+                if pc == 0xFD15:  # RESTOR
+                    # Check stack contents
+                    sp = self.cpu.state.sp
+                    if sp < 0xFF:
+                        ret_low = self.memory.read(0x100 + ((sp + 1) & 0xFF))
+                        ret_high = self.memory.read(0x100 + ((sp + 2) & 0xFF))
+                        return_addr = ret_low | (ret_high << 8)
+                        print(f"   Stack SP=${sp:02X}, return addr=${return_addr:04X}")
+                elif pc == 0xFF5B:  # CINT - log opcodes it executes
+                    print(f"   CINT will execute opcodes...")
 
             # Debug: Show raster line during CINT
             if self.debug and pc >= 0xFF5B and pc <= 0xFFFF:
