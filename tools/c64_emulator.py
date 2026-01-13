@@ -625,7 +625,7 @@ class CPU6502:
                     'char_hex': f'${char:02X}',
                     'cursor_addr': cursor_addr,
                     'screen_addr': SCREEN_MEM,
-                    'cycle_count': getattr(self, 'current_cycles', 0),
+                    'cycles': getattr(self, 'current_cycles', 0),
                     'pc': self.state.pc
                 })
             
@@ -2605,6 +2605,8 @@ class C64Emulator:
             pc = self.cpu.state.pc
 
 
+            # Pass current cycle count to CPU for debugging
+            self.cpu.current_cycles = cycles
             step_cycles = self.cpu.step(self.udp_debug)
             cycles += step_cycles
             self.current_cycles = cycles
