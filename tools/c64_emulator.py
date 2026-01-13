@@ -2153,8 +2153,7 @@ class TextualInterface(App):
         super().__init__()
         self.emulator = emulator
         self.max_cycles = max_cycles
-        self.debug_messages = []
-        self.max_logs = 100
+        self.max_logs = 1000
         self.current_cycle = 0
         self.emulator_thread = None
         self.running = False
@@ -2180,9 +2179,7 @@ class TextualInterface(App):
         # Debug: check if widgets are found
         self.add_debug_log(f"Widgets found: c64={self.c64_display is not None}, debug={self.debug_logs is not None}, status={self.status_bar is not None}")
 
-        # Display any buffered messages
-        if self.debug_logs and self.debug_messages:
-            self.debug_logs.update("\n".join(self.debug_messages[-12:]))
+        # Buffered messages are handled automatically in add_debug_log
 
         # Start emulator in background thread
         self.running = True
@@ -2286,10 +2283,25 @@ class TextualInterface(App):
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_message = f"[{timestamp}] {message}"
 
+        # Buffer message if widget not ready yet
+        if not hasattr(self, 'debug_messages'):
+            self.debug_messages = []
+            self.max_logs = 1000  # Keep more messages
+
+        self.debug_messages.append(formatted_message)
+        if len(self.debug_messages) > self.max_logs:
+            self.debug_messages.pop(0)
+
         # Update widget if it's available
         if self.debug_logs:
-            self.debug_logs.write(formatted_message)
-            # RichLog auto-scrolls when auto_scroll=True
+            # If this is the first time, write all buffered messages
+            if not hasattr(self, '_debug_initialized'):
+                for msg in self.debug_messages:
+                    self.debug_logs.write(msg)
+                self._debug_initialized = True
+            else:
+                # Just write the latest message
+                self.debug_logs.write(formatted_message)
 
     def update_screen(self, screen_content: str):
         """Stub method for compatibility - Textual updates automatically"""
