@@ -2069,6 +2069,7 @@ class TextualInterface(App):
         margin: 0 1;
         padding: 0;
         height: 50%;
+        width: 100%;
     }
 
     #debug-panel {
@@ -2177,15 +2178,6 @@ class TextualInterface(App):
         """Stub method for compatibility - Textual handles input automatically"""
         return False
 
-    def on_key(self, event: events.Key):
-        """Handle key presses"""
-        if event.key == "ctrl+x":
-            self.running = False
-            if self.emulator:
-                self.emulator.running = False
-            self.exit()
-        # Don't consume the event, let it bubble up
-        return super().on_key(event)
 
 class C64Emulator:
     """Main C64 emulator"""
