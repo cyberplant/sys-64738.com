@@ -2101,6 +2101,7 @@ class TextualInterface(App):
     BINDINGS = [
         ("ctrl+x", "quit", "Quit the emulator"),
         ("ctrl+r", "random_screen", "Fill screen with random characters"),
+        ("ctrl+k", "dump_screen", "Dump screen memory to debug logs"),
     ]
 
     CSS = """
@@ -2248,7 +2249,10 @@ class TextualInterface(App):
 
             # Update status bar with actual cycle count from emulator
             emu = self.emulator
-            status_text = f"🎮 C64 | Cycle: {emu.current_cycles:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Ctrl+X: Quit"
+            # Read cursor position from memory
+            cursor_row = emu.memory.read(0xD3)
+            cursor_col = emu.memory.read(0xD8)
+            status_text = f"🎮 C64 | Cycle: {emu.current_cycles:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Cursor: {cursor_row},{cursor_col}"
             if self.status_bar:
                 self.status_bar.update(status_text)
 
@@ -2303,6 +2307,26 @@ class TextualInterface(App):
             self.add_debug_log("🎲 Filled screen with random characters")
             # Trigger immediate screen update
             self.emulator._update_text_screen()
+
+    def action_dump_screen(self):
+        """Dump screen memory sample to debug logs"""
+        if self.emulator:
+            # Dump first few lines of screen memory
+            lines = []
+            for row in range(min(5, 25)):  # First 5 rows
+                line_start = 0x0400 + row * 40
+                line_data = []
+                for col in range(min(20, 40)):  # First 20 columns
+                    char_code = self.emulator.memory.ram[line_start + col]
+                    # Convert to printable char or show code
+                    if 32 <= char_code <= 126:
+                        line_data.append(chr(char_code))
+                    else:
+                        line_data.append(f'${char_code:02X}')
+                lines.append(f"Row {row}: {''.join(line_data)}")
+            self.add_debug_log("📺 Screen memory dump:")
+            for line in lines:
+                self.add_debug_log(f"  {line}")
 
 
 class C64Emulator:
