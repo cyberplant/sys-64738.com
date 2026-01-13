@@ -25,6 +25,14 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
+try:
+    from rich.console import Console
+    from rich.text import Text
+    from rich.panel import Panel
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
 
 # C64 Memory Map Constants
 ROM_BASIC_START = 0xA000
@@ -2286,7 +2294,8 @@ class C64Emulator:
                             print(f"   First line: '{first_line}'")
 
                 time.sleep(self.screen_update_interval)
-            except Exception:
+            except Exception as e:
+                print(f"Screen update error: {e}")
                 pass
     
     def run(self, max_cycles: int = 1000000) -> None:
@@ -2535,6 +2544,60 @@ class C64Emulator:
     
     def render_text_screen(self, no_colors: bool = False) -> str:
         """Render text screen as colored string (thread-safe)"""
+        if RICH_AVAILABLE and not no_colors:
+            return self._render_with_rich()
+        else:
+            return self._render_with_ansi(no_colors)
+
+    def _render_with_rich(self) -> str:
+        """Render screen using Rich library for better formatting"""
+        # C64 color to Rich color mapping
+        c64_colors = {
+            0: "black",      # Black
+            1: "white",      # White
+            2: "red",        # Red
+            3: "cyan",       # Cyan
+            4: "purple",     # Purple
+            5: "green",      # Green
+            6: "blue",       # Blue
+            7: "yellow",     # Yellow
+            8: "bright_red", # Orange
+            9: "bright_magenta",  # Brown
+            10: "bright_magenta", # Pink
+            11: "bright_cyan",    # Dark gray
+            12: "bright_white",   # Medium gray
+            13: "bright_green",   # Light green
+            14: "bright_blue",    # Light blue
+            15: "bright_white"    # Light gray
+        }
+
+        console = Console(width=80, legacy_windows=False)
+        with self.screen_lock:
+            # Create a text object for the entire screen
+            screen_text = Text()
+
+            for row in range(25):
+                for col in range(40):
+                    char = self.text_screen[row][col]
+                    color = self.text_colors[row][col]
+
+                    # Get Rich color name
+                    rich_color = c64_colors.get(color, "white")
+
+                    # Add character with color
+                    screen_text.append(char, style=f"bold {rich_color}")
+
+                # Add newline at end of row
+                if row < 24:  # Don't add newline after last row
+                    screen_text.append("\n")
+
+            # Render to string
+            with console.capture() as capture:
+                console.print(screen_text)
+            return capture.get()
+
+    def _render_with_ansi(self, no_colors: bool = False) -> str:
+        """Render text screen with ANSI colors (fallback)"""
         # C64 color to ANSI color mapping
         c64_colors = {
             0: 30,   # Black
@@ -2728,7 +2791,8 @@ class EmulatorServer:
         
         elif cmd == "SCREEN":
             self.emu._update_text_screen()
-            return self.emu.render_text_screen(no_colors=self.emu.no_colors)
+            # For server mode, always return plain text
+            return self.emu.render_text_screen(no_colors=True)
         
         elif cmd == "LOAD":
             if len(parts) < 2:
@@ -2850,9 +2914,21 @@ def main():
     
     # Show screen
     if not server or not server.running:
-        print("\nScreen output:")
         emu._update_text_screen()
-        print(emu.render_text_screen(no_colors=args.no_colors))
+
+        if RICH_AVAILABLE and not args.no_colors:
+            console = Console()
+            screen_content = emu.render_text_screen(no_colors=False)
+            panel = Panel.fit(
+                screen_content,
+                title="C64 Screen Output",
+                border_style="blue",
+                padding=(0, 1)
+            )
+            console.print(panel)
+        else:
+            print("\nScreen output:")
+            print(emu.render_text_screen(no_colors=args.no_colors))
     
     # Stop screen update thread
     emu.running = False
