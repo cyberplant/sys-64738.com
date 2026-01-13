@@ -603,10 +603,11 @@ class CPU6502:
             self.memory.write(0xA2, (jiffy >> 16) & 0xFF)
 
         # Check for pending IRQ (only if interrupts are enabled)
-        # Temporarily disable all interrupts for stability
-        # if self.memory.pending_irq and not self._get_flag(0x04):  # I flag clear
-        #     print(f"🚨 Handling pending IRQ at PC=\\${self.state.pc:04X}")
-        #     self._handle_irq(udp_debug)
+        if self.memory.pending_irq and not self._get_flag(0x04):  # I flag clear
+            # Only handle CIA interrupts for now, skip VIC
+            if self.memory.cia1_icr & 0x80:  # CIA interrupt pending
+                self._handle_cia_interrupt()
+            # Don't call general IRQ handler yet
 
         return cycles
     
@@ -614,9 +615,10 @@ class CPU6502:
         """Update CIA timers and check for IRQ"""
         # Update Timer A
         if self.memory.cia1_timer_a.update(cycles):
-            self.memory.cia1_icr |= 0x01  # Timer A interrupt
-            self.memory.cia1_icr |= 0x80  # IRQ flag
-            self.memory.pending_irq = True
+            if self.memory.cia1_timer_a.irq_enabled:
+                self.memory.cia1_icr |= 0x01  # Timer A interrupt
+                self.memory.cia1_icr |= 0x80  # IRQ flag
+                self.memory.pending_irq = True
             self.memory.cia1_timer_a.reset()
         
         # Update Timer B (can be clocked by Timer A underflow)
@@ -638,11 +640,36 @@ class CPU6502:
                 self.memory.pending_irq = True
                 self.memory.cia1_timer_b.reset()
     
+    def _handle_cia_interrupt(self) -> None:
+        """Handle CIA interrupts directly (bypass KERNAL for stability)"""
+        # Check what CIA interrupt occurred
+        icr = self.memory.cia1_icr
+
+        if icr & 0x01:  # Timer A interrupt
+            # Increment jiffy clock (C64 standard locations)
+            jiffy_low = self.memory.read(0xA0)
+            jiffy_mid = self.memory.read(0xA1)
+            jiffy_high = self.memory.read(0xA2)
+
+            jiffy = jiffy_low | (jiffy_mid << 8) | (jiffy_high << 16)
+            jiffy += 1
+
+            self.memory.write(0xA0, jiffy & 0xFF)
+            self.memory.write(0xA1, (jiffy >> 8) & 0xFF)
+            self.memory.write(0xA2, (jiffy >> 16) & 0xFF)
+
+            # Debug: show jiffy updates occasionally
+            if jiffy % 10 == 0:
+                print(f"⏰ Jiffy clock: {jiffy} (at cycle {self.state.cycles})")
+
+        # Clear the interrupt by reading ICR (already done in _read_cia1)
+        # The pending_irq flag will be cleared when ICR is read
+
     def _handle_irq(self, udp_debug: Optional[UdpDebugLogger] = None) -> None:
         """Handle IRQ interrupt"""
         # Clear pending IRQ flag before handling
         self.memory.pending_irq = False
-        
+
         # Push PC and P to stack
         pc = self.state.pc
         self.memory.write(0x100 + self.state.sp, (pc >> 8) & 0xFF)
@@ -651,10 +678,10 @@ class CPU6502:
         self.state.sp = (self.state.sp - 1) & 0xFF
         self.memory.write(0x100 + self.state.sp, self.state.p | 0x10)  # Set B flag
         self.state.sp = (self.state.sp - 1) & 0xFF
-        
+
         # Set interrupt disable flag
         self._set_flag(0x04, True)
-        
+
         # Jump to IRQ vector
         irq_addr = self._read_word(IRQ_VECTOR)
         self.state.pc = irq_addr
@@ -2185,8 +2212,8 @@ class C64Emulator:
         jiffy_clock = 0x4027  # Approximately 60Hz at 1MHz
         self.memory.cia1_timer_a.latch = jiffy_clock
         self.memory.cia1_timer_a.counter = jiffy_clock
-        self.memory.cia1_timer_a.running = False  # Keep timer disabled
-        self.memory.cia1_timer_a.irq_enabled = False
+        self.memory.cia1_timer_a.running = True   # Enable jiffy clock
+        self.memory.cia1_timer_a.irq_enabled = True
 
         # Timer B can be used for other purposes
         self.memory.cia1_timer_b.latch = 0xFFFF
