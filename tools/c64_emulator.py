@@ -2077,12 +2077,12 @@ class TextualInterface(App):
     }
 
     #status-bar {
-        border: solid $accent;
+        border: solid $primary;
         margin: 0 1;
         padding: 0 1;
         height: 4;
-        background: $accent;
-        color: $text-accent;
+        background: $primary;
+        color: $surface;
     }
     """
 
@@ -3105,8 +3105,8 @@ def main():
             while server.running and emu.running:
                 time.sleep(0.1)
         else:
-            if not rich_active:
-                print("Running emulator...")
+            # This code should never be reached since Textual blocks
+            print("Running emulator...")
             emu.run(args.max_cycles)
     except KeyboardInterrupt:
         print("\nStopping emulator...")
