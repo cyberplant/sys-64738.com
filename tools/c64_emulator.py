@@ -431,6 +431,10 @@ class CPU6502:
             self.state.p |= flag
         else:
             self.state.p &= ~flag
+
+    def _clear_flag(self, flag: int) -> None:
+        """Clear processor flag"""
+        self.state.p &= ~flag
     
     def _update_flags(self, value: int) -> None:
         """Update Z and N flags based on value"""
@@ -562,6 +566,10 @@ class CPU6502:
                     'cycles': getattr(self, 'current_cycles', 0)
                 })
 
+            # KERNAL screen editor sets $D0 to 0 at start (quote mode flag)
+            # This is important for proper screen editor state
+            self.memory.write(0xD0, 0)
+
             # Get cursor position from zero-page
             cursor_low = self.memory.read(0xD1)
             cursor_high = self.memory.read(0xD2)
@@ -588,8 +596,8 @@ class CPU6502:
                     cursor_addr = SCREEN_MEM + 24 * 40
 
                 # Reset consecutive CR counter on successful CR
-                if hasattr(self, 'interface') and self.interface:
-                    self.interface.consecutive_cr_count = 0
+                #if hasattr(self, 'interface') and self.interface:
+                    #self.interface.consecutive_cr_count = 0
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space
@@ -614,6 +622,11 @@ class CPU6502:
             self.memory.write(0xD3, row)  # Cursor row
             self.memory.write(0xD8, col)  # Cursor column
             
+            # CHROUT must return with carry CLEAR (CLC) - this is critical!
+            # The KERNAL code at $E10F checks BCS (Branch if Carry Set)
+            # If carry is set, it loops back to call CHROUT again
+            self._clear_flag(0x01)  # Clear carry flag (bit 0)
+
             # Return from JSR (RTS behavior)
             # On JSR: pushes (return_address - 1)
             #   High byte first at current SP, then SP--
