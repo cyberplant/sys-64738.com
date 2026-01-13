@@ -591,16 +591,7 @@ class CPU6502:
         raster_max = 312 if self.memory.video_standard == "pal" else 263
         self.memory.raster_line = (self.memory.raster_line + 1) % raster_max
 
-        # Update jiffy clock (software-based, ~60Hz)
-        self.memory.jiffy_cycles += cycles
-        if self.memory.jiffy_cycles >= 17000:  # ~60Hz at 1MHz
-            self.memory.jiffy_cycles = 0
-            # Increment jiffy clock at $A0-$A2 (low, mid, high)
-            jiffy = self.memory.read(0xA0) | (self.memory.read(0xA1) << 8) | (self.memory.read(0xA2) << 16)
-            jiffy += 1
-            self.memory.write(0xA0, jiffy & 0xFF)
-            self.memory.write(0xA1, (jiffy >> 8) & 0xFF)
-            self.memory.write(0xA2, (jiffy >> 16) & 0xFF)
+        # Jiffy clock is now handled by CIA timer interrupts
 
         # Check for pending IRQ (only if interrupts are enabled)
         if self.memory.pending_irq and not self._get_flag(0x04):  # I flag clear
@@ -1145,9 +1136,13 @@ class CPU6502:
         else:
             # Unknown opcode - halt CPU (like VICE does)
             print(f"CPU halted: Unknown opcode ${opcode:02X} at PC=${self.state.pc:04X}")
-            # Check if we're in CINT
-            if 0xFF5B <= self.state.pc <= 0xFFFF:
-                print(f"   This happened during CINT execution!")
+            # Check location
+            if 0xA000 <= self.state.pc <= 0xBFFF:
+                print(f"   This happened in BASIC ROM!")
+            elif 0xE000 <= self.state.pc <= 0xFFFF:
+                print(f"   This happened in KERNAL ROM!")
+            elif 0xFF5B <= self.state.pc <= 0xFFFF:
+                print(f"   This happened during CINT/KERNAL execution!")
             self.state.stopped = True
             return 0
     
@@ -2207,11 +2202,17 @@ class C64Emulator:
             self.memory.ram[addr + 1] = (value >> 8) & 0xFF
         
         # Initialize CIA1 timers (typical C64 boot values)
-        # Timer A is used for jiffy clock (60Hz = ~16667 cycles at ~1MHz)
-        # Set to 60Hz timing for system clock
-        jiffy_clock = 0x4027  # Approximately 60Hz at 1MHz
-        self.memory.cia1_timer_a.latch = jiffy_clock
-        self.memory.cia1_timer_a.counter = jiffy_clock
+        # Timer A is used for jiffy clock (exactly 60Hz)
+        # PAL C64: ~1.022727 MHz CPU, so 60Hz = 17045.45 cycles
+        # We use 17045 for accuracy
+        if self.memory.video_standard == "pal":
+            cpu_hz = 1022727  # PAL C64 CPU frequency
+        else:
+            cpu_hz = 985248   # NTSC C64 CPU frequency
+
+        jiffy_cycles = cpu_hz // 60  # Exact 60Hz timing
+        self.memory.cia1_timer_a.latch = jiffy_cycles
+        self.memory.cia1_timer_a.counter = jiffy_cycles
         self.memory.cia1_timer_a.running = True   # Enable jiffy clock
         self.memory.cia1_timer_a.irq_enabled = True
 
@@ -2398,14 +2399,22 @@ class C64Emulator:
                 print(f"🏃 JMP (\\$A000) -> \\${jump_target:04X} at cycle {cycles}")
                 if jump_target == 0xFCF8:
                     print(f"   🚨 DANGER: Jump target is boot start! Infinite loop!")
+                elif jump_target == 0:
+                    print(f"   🚨 ERROR: Jump target is 0! Invalid BASIC entry point!")
                 # Log that we're about to jump
                 print(f"   About to set PC to \\${jump_target:04X}")
+                print(f"   A000 content: \\${a000_low:02X} \\${a000_high:02X}")
             elif pc >= 0xFCFE and pc <= 0xFD02:  # Log all instructions in boot cleanup
                 print(f"📍 Boot cleanup: PC=\\${pc:04X}, opcode=\\${self.memory.read(pc):02X}, cycle {cycles}")
 
             # Debug: Track entry to BASIC
-            if last_pc == 0xFCFF and pc == (self.memory.read(0xA000) | (self.memory.read(0xA001) << 8)):
+            if pc == 0xE394:  # BASIC cold start entry point
                 print(f"📚 Entered BASIC cold start at \\${pc:04X} (cycle {cycles})")
+
+            # Debug: Track execution in BASIC ROM
+            if 0xA000 <= pc <= 0xBFFF and cycles > 2020000:  # In BASIC ROM
+                if cycles % 50000 == 0:  # Log occasionally
+                    print(f"📖 BASIC executing at \\${pc:04X} (cycle {cycles})")
 
             # Debug: Why is RESTOR called repeatedly?
             if pc == 0xFD15 and cycles > 2010000:  # RESTOR called after boot should be done
