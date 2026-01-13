@@ -179,9 +179,8 @@ class MemoryMap:
                 # Update text screen from memory
                 self._update_text_screen()
                 # Debug: log screen memory writes
-                if hasattr(self, 'interface') and addr >= 0x0400 and addr < 0x0410:  # First 16 bytes
-                    if hasattr(self.interface, 'add_debug_log'):
-                        self.interface.add_debug_log(f"📺 Screen write: ${addr:04X} = ${value:02X}")
+                if hasattr(self.interface, 'add_debug_log'):
+                    self.interface.add_debug_log(f"📺 Screen write: ${addr:04X} = ${value:02X}")
             pass  # The periodic update thread will handle this
         
         # ROM areas - writes go to RAM underneath
@@ -2063,6 +2062,7 @@ class TextualInterface(App):
 
     BINDINGS = [
         ("ctrl+x", "quit", "Quit the emulator"),
+        ("ctrl+r", "random_screen", "Fill screen with random characters"),
     ]
 
     CSS = """
@@ -2172,6 +2172,10 @@ class TextualInterface(App):
 
             # Update screen display
             screen_content = self.emulator.render_text_screen(no_colors=False)
+            self.add_debug_log(f"🎨 Rendering screen content (length: {len(screen_content)})")
+            if len(screen_content) > 0:
+                first_line = screen_content.split('\n')[0] if '\n' in screen_content else screen_content[:50]
+                self.add_debug_log(f"🎨 First line: '{first_line}'")
             self.c64_display.update(screen_content)
 
             # Update status bar with actual cycle count from emulator
@@ -2218,6 +2222,19 @@ class TextualInterface(App):
         if self.emulator:
             self.emulator.running = False
         self.exit()
+
+    def action_random_screen(self):
+        """Fill screen with random characters for testing"""
+        import random
+        if self.emulator:
+            # Fill screen memory with random visible characters
+            for addr in range(0x0400, 0x0400 + 1000):  # Full screen
+                # Use random printable ASCII characters (0x20-0x7E)
+                char_code = random.randint(0x20, 0x7E)
+                self.emulator.memory.ram[addr] = char_code
+            self.add_debug_log("🎲 Filled screen with random characters")
+            # Trigger immediate screen update
+            self.emulator._update_text_screen()
 
 
 class C64Emulator:
@@ -2308,6 +2325,7 @@ class C64Emulator:
     
     def _initialize_c64(self) -> None:
         """Initialize C64 to a known state"""
+        print("🎮 C64 initialization starting")  # Debug print
         # Write to $0000 during reset (as JSC64 does)
         # This is part of the 6510 processor port initialization
         self.memory.ram[0x00] = 0x2F
@@ -2326,7 +2344,12 @@ class C64Emulator:
         test_text = "C64 EMULATOR TEST"
         for i, char in enumerate(test_text):
             if i < 40:  # Stay within first line
-                self.memory.ram[SCREEN_MEM + i] = ord(char) if char != ' ' else 0x20
+                char_code = ord(char) if char != ' ' else 0x20
+                self.memory.ram[SCREEN_MEM + i] = char_code
+                print(f"🎨 Screen mem ${SCREEN_MEM + i:04X} = ${char_code:02X} ('{char}')")  # Temporary print
+                # Log to debug if interface exists
+                if hasattr(self, 'interface') and self.interface:
+                    self.interface.add_debug_log(f"🎨 Init: Screen mem ${SCREEN_MEM + i:04X} = ${char_code:02X} ('{char}')")
         
         # Initialize color memory (default: light blue = 14, but we'll use white = 1)
         for addr in range(COLOR_MEM, COLOR_MEM + 1000):
@@ -2749,7 +2772,11 @@ class C64Emulator:
         """Update text screen from screen memory (thread-safe)"""
         screen_base = SCREEN_MEM
         color_base = COLOR_MEM
-        
+
+        # Debug: screen update
+        if hasattr(self, 'interface') and self.interface:
+            self.interface.add_debug_log("🎨 Updating text screen from memory")
+
         # Use lock to ensure thread-safe access
         with self.screen_lock:
             for row in range(25):
@@ -2757,7 +2784,7 @@ class C64Emulator:
                     addr = screen_base + row * 40 + col
                     char_code = self.memory.read(addr)
                     color_code = self.memory.read(color_base + row * 40 + col) & 0x0F
-                
+
                 # Convert C64 screen codes to ASCII
                 # C64 screen codes: PETSCII screen codes
                 if char_code == 0x00:
