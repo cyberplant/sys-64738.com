@@ -252,11 +252,11 @@ class MemoryMap:
             # Disable VIC interrupts completely
             return 0x00
         elif reg == 0x20:  # Border color ($D020)
-            return self._vic_regs.get(0x20, 0x0E) & 0x0F  # Default light blue
+            return (self._vic_regs[0x20] if 0x20 < len(self._vic_regs) else 0x0E) & 0x0F  # Default light blue
         elif reg == 0x21:  # Background color 0 ($D021)
-            return self._vic_regs.get(0x21, 0x06) & 0x0F  # Default blue
+            return (self._vic_regs[0x21] if 0x21 < len(self._vic_regs) else 0x06) & 0x0F  # Default blue
         # Other registers return stored values or 0
-        return self._vic_regs.get(reg, 0)
+        return self._vic_regs[reg] if reg < len(self._vic_regs) else 0
     
     def _write_vic(self, reg: int, value: int) -> None:
         """Write VIC-II register"""
@@ -2142,14 +2142,35 @@ class TextualInterface(App):
     def _run_emulator(self):
         """Run the emulator in background thread"""
         try:
-            self.emulator.run(max_cycles=self.max_cycles)
+            # For Textual interface, run without the screen update worker
+            # since UI updates are handled by _update_ui
+            self.emulator.running = True
+            cycles = 0
+            max_cycles = self.max_cycles
+
+            while self.emulator.running and cycles < max_cycles:
+                step_cycles = self.emulator.cpu.step(self.emulator.udp_debug)
+                cycles += step_cycles
+                self.emulator.current_cycles = cycles
+
+                # Simple stuck detection
+                if cycles % 10000 == 0:
+                    if hasattr(self.emulator, 'interface') and self.emulator.interface:
+                        self.emulator.interface.add_debug_log(f"🔄 Emulator progress: {cycles} cycles")
+
         except Exception as e:
-            self.add_debug_log(f"❌ Emulator error: {e}")
+            if hasattr(self, 'add_debug_log'):
+                self.add_debug_log(f"❌ Emulator error: {e}")
+            else:
+                print(f"❌ Emulator error: {e}")
 
     def _update_ui(self):
         """Update the UI periodically"""
         if self.emulator:
-            # Update screen
+            # Update text screen from memory
+            self.emulator._update_text_screen()
+
+            # Update screen display
             screen_content = self.emulator.render_text_screen(no_colors=False)
             self.c64_display.update(screen_content)
 
@@ -2158,6 +2179,14 @@ class TextualInterface(App):
             status_text = f"🎮 C64 | Cycle: {emu.current_cycles:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Ctrl+X: Quit"
             if self.status_bar:
                 self.status_bar.update(status_text)
+
+            # Debug: show screen content periodically
+            if hasattr(self.emulator, 'debug') and self.emulator.debug:
+                non_spaces = sum(1 for row in self.emulator.text_screen for char in row if char != ' ')
+                if non_spaces > 0:
+                    first_line = ''.join(self.emulator.text_screen[0]).rstrip()
+                    if first_line:
+                        self.add_debug_log(f"📝 Screen content: '{first_line}'")
 
     def add_debug_log(self, message: str):
         """Add a debug message"""
@@ -2292,6 +2321,12 @@ class C64Emulator:
         # The C64 typically clears screen during initialization
         for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
             self.memory.ram[addr] = 0x20  # Space character
+
+        # Add test text to see if screen updates work
+        test_text = "C64 EMULATOR TEST"
+        for i, char in enumerate(test_text):
+            if i < 40:  # Stay within first line
+                self.memory.ram[SCREEN_MEM + i] = ord(char) if char != ' ' else 0x20
         
         # Initialize color memory (default: light blue = 14, but we'll use white = 1)
         for addr in range(COLOR_MEM, COLOR_MEM + 1000):
