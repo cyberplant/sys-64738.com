@@ -2175,7 +2175,7 @@ class TextualInterface(App):
             max_cycles = self.max_cycles
 
             while self.emulator.running and cycles < max_cycles:
-                step_cycles = self.emulator.cpu.step(self.emulator.udp_debug)
+                step_cycles = self.emulator.cpu.step(self.emulator.udp_debug, cycles)
                 cycles += step_cycles
                 self.emulator.current_cycles = cycles
 
