@@ -113,8 +113,9 @@ class MemoryMap:
     cia1_icr: int = 0  # Interrupt Control Register
     pending_irq: bool = False  # Pending IRQ flag
     video_standard: str = "pal"  # "pal" or "ntsc"
-    raster_line: int = 0  # Current raster line (0-311 for PAL, 0-262 for NTSC)
+    raster_line: int = 300  # Current raster line (start high so it wraps to 0)
     raster_cycles: int = 0  # Cycle counter for raster timing
+    vic_interrupt_state: int = 0  # VIC interrupt state for D019
     
     def read(self, addr: int) -> int:
         """Read from memory, handling ROM/RAM mapping"""
@@ -226,6 +227,9 @@ class MemoryMap:
             return (raster_msb << 7) | (1 << 3)  # 25 rows, raster MSB
         elif reg == 0x12:  # Raster line register
             return self.raster_line & 0xFF
+        elif reg == 0x19:  # VIC interrupt register
+            # For now, don't generate VIC interrupts during boot
+            return 0x00
         # Other registers return 0 (simplified)
         return 0
     
@@ -235,6 +239,12 @@ class MemoryMap:
         if not hasattr(self, '_vic_regs'):
             self._vic_regs = bytearray(0x40)
         self._vic_regs[reg] = value
+
+        # Handle special register writes
+        if reg == 0x19:  # VIC interrupt register
+            # Writing to D019 acknowledges interrupts
+            # For simulation, reset interrupt state
+            self.vic_interrupt_state = 0
     
     def _read_cia1(self, reg: int) -> int:
         """Read CIA1 register"""
@@ -411,6 +421,21 @@ class CPU6502:
                 })
         
 
+        # Special handling for CINT - simulate PAL/NTSC detection
+        if pc == 0xFF5B:  # Start of CINT
+            print(f"🎯 CINT: Simulating PAL/NTSC detection, returning immediately")
+            # CINT is supposed to:
+            # 1. Clear screen memory
+            # 2. Detect PAL/NTSC by timing
+            # 3. Set up VIC registers
+            # For emulator, we skip timing and assume configured standard
+
+            # Simulate CINT completing by setting PC to FCFE, adjust stack
+            self.state.pc = 0xFCFE  # Return to CLI instruction
+            self.state.sp += 2  # Pop the return address from stack
+            return 1  # Minimal cycles
+
+
         # Check if we're at a KERNAL vector that needs handling
         # CHRIN ($FFCF) - Input character from keyboard
         if pc == 0xFFCF:
@@ -561,17 +586,13 @@ class CPU6502:
         self._update_cia_timers(cycles)
 
         # Update VIC-II raster line (simulate video timing)
-        # For emulator purposes, increment raster line slowly so CINT can complete
-        # Real PAL: 312 lines at ~50Hz = ~63 cycles per line
-        # We'll increment every ~1000 cycles to make CINT finish reasonably
-        self.memory.raster_cycles += cycles
-        if self.memory.raster_cycles >= 1000:
-            raster_max = 312 if self.memory.video_standard == "pal" else 263
-            self.memory.raster_line = (self.memory.raster_line + 1) % raster_max
-            self.memory.raster_cycles = 0
+        # Increment every cycle for fast CINT timing
+        raster_max = 312 if self.memory.video_standard == "pal" else 263
+        self.memory.raster_line = (self.memory.raster_line + 1) % raster_max
 
         # Check for pending IRQ (only if interrupts are enabled)
         if self.memory.pending_irq and not self._get_flag(0x04):  # I flag clear
+            print(f"🚨 Handling pending IRQ at PC=\\${self.state.pc:04X}")
             self._handle_irq(udp_debug)
 
         return cycles
@@ -1027,8 +1048,11 @@ class CPU6502:
             self.state.pc = (self.state.pc + 1) & 0xFFFF
             return 2
         elif opcode == 0x58:  # CLI
+            # Clear any pending interrupts before enabling
+            self.memory.pending_irq = False
             self._set_flag(0x04, False)
             self.state.pc = (self.state.pc + 1) & 0xFFFF
+            print(f"   CLI executed, I-flag now {self._get_flag(0x04)}, cleared pending IRQs")
             return 2
         elif opcode == 0x78:  # SEI
             self._set_flag(0x04, True)
@@ -2148,8 +2172,8 @@ class C64Emulator:
         jiffy_clock = 0x4027  # Approximately 60Hz at 1MHz
         self.memory.cia1_timer_a.latch = jiffy_clock
         self.memory.cia1_timer_a.counter = jiffy_clock
-        self.memory.cia1_timer_a.running = True  # Start timer
-        self.memory.cia1_timer_a.irq_enabled = True  # Enable interrupts
+        self.memory.cia1_timer_a.running = False  # Don't start timer during boot
+        self.memory.cia1_timer_a.irq_enabled = False
 
         # Timer B can be used for other purposes
         self.memory.cia1_timer_b.latch = 0xFFFF
@@ -2224,6 +2248,10 @@ class C64Emulator:
 
             step_cycles = self.cpu.step(self.udp_debug)
             cycles += step_cycles
+
+            # Debug: Log PC after CLI
+            if pc == 0xFCFE:  # Just executed CLI
+                print(f"📍 After CLI step: new PC=\\${self.cpu.state.pc:04X}, cycles={cycles}")
             
             # Calculate cycles per second periodically
             if cycles - last_cycle_check >= 100000:
@@ -2320,32 +2348,39 @@ class C64Emulator:
                 print(f"✅ COMPLETED {routine_name} at cycle {cycles}")
 
             # Debug: Log post-boot sequence
-            if last_pc == 0xFF5B and pc >= 0xFCFE:  # After CINT, in boot cleanup
-                if pc == 0xFCFE:  # CLI
-                    print(f"🔓 CLI (enable interrupts) at cycle {cycles}")
-                elif pc == 0xFCFF:  # JMP ($A000)
-                    a000_low = self.memory.read(0xA000)
-                    a000_high = self.memory.read(0xA001)
-                    jump_target = a000_low | (a000_high << 8)
-                    print(f"🏃 JMP (\\$A000) -> \\${jump_target:04X} at cycle {cycles}")
-                    print(f"   A000 reads: \\${a000_low:02X} \\${a000_high:02X}")
-                    # Check if target is valid
-                    if jump_target == 0x0000:
-                        print(f"   ❌ ERROR: Jump target is \\$0000!")
-                    elif jump_target < 0x0400:
-                        print(f"   ⚠️ WARNING: Jump target \\${jump_target:04X} is in zero page!")
-
-            # Debug: Track what happens after JMP ($A000)
-            if last_pc == 0xFCFF:  # Just did JMP ($A000)
+            if pc == 0xFCFE:  # CLI
+                print(f"🔓 CLI (enable interrupts) at cycle {cycles}")
+                print(f"   Next PC should be FCFF, I flag was {self.cpu.state.p & 0x04}")
+            elif pc == 0xFCFF:  # JMP ($A000)
                 a000_low = self.memory.read(0xA000)
                 a000_high = self.memory.read(0xA001)
                 jump_target = a000_low | (a000_high << 8)
-                if pc == jump_target:
-                    print(f"📚 Entered BASIC at \\${jump_target:04X} (cycle {cycles})")
+                print(f"🏃 JMP (\\$A000) -> \\${jump_target:04X} at cycle {cycles}")
+                if jump_target == 0xFCF8:
+                    print(f"   🚨 DANGER: Jump target is boot start! Infinite loop!")
+                # Log that we're about to jump
+                print(f"   About to set PC to \\${jump_target:04X}")
+            elif pc >= 0xFCFE and pc <= 0xFD02:  # Log all instructions in boot cleanup
+                print(f"📍 Boot cleanup: PC=\\${pc:04X}, opcode=\\${self.memory.read(pc):02X}, cycle {cycles}")
+
+            # Debug: Track entry to BASIC
+            if last_pc == 0xFCFF and pc == (self.memory.read(0xA000) | (self.memory.read(0xA001) << 8)):
+                print(f"📚 Entered BASIC cold start at \\${pc:04X} (cycle {cycles})")
 
             # Debug: Why is RESTOR called repeatedly?
-            if pc == 0xFD15 and cycles > 2100000:  # RESTOR called late
-                print(f"🔄 RESTOR called again at cycle {cycles} - why?")
+            if pc == 0xFD15 and cycles > 2010000:  # RESTOR called after boot should be done
+                print(f"🔄 RESTOR called again at cycle {cycles} - investigating...")
+                # Check stack to see who called it
+                sp = self.cpu.state.sp
+                if sp < 0xFF:
+                    ret_low = self.memory.read(0x100 + ((sp + 1) & 0xFF))
+                    ret_high = self.memory.read(0x100 + ((sp + 2) & 0xFF))
+                    return_addr = ret_low | (ret_high << 8)
+                    print(f"   Return address on stack: \\${return_addr:04X}")
+                    if return_addr == 0xFCFB:
+                        print(f"   ✅ Called from boot sequence (FCFB)")
+                    else:
+                        print(f"   ❓ Called from unexpected address \\${return_addr:04X}")
         
         # Determine stop reason
         stop_reason = "unknown"
