@@ -2065,7 +2065,7 @@ class TextualInterface(App):
         border: solid $primary;
         margin: 0 1;
         padding: 0;
-        height: 12;
+        height: 50%;
     }
 
     #debug-panel {
@@ -2073,14 +2073,16 @@ class TextualInterface(App):
         margin: 0 1;
         overflow-y: scroll;
         padding: 0 1;
-        height: 6;
+        height: 35%;
     }
 
     #status-bar {
         border: solid $accent;
         margin: 0 1;
         padding: 0 1;
-        height: 2;
+        height: 4;
+        background: $accent;
+        color: $text-accent;
     }
     """
 
@@ -2142,13 +2144,11 @@ class TextualInterface(App):
             # Update cycle count (this is approximate since emulator runs in background)
             self.current_cycle += 1000  # Rough estimate
 
-            # Update status
+            # Update status bar
             emu = self.emulator
             status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Ctrl+X: Quit"
             if self.status_bar:
                 self.status_bar.update(status_text)
-                # Debug: add to debug log too
-                self.add_debug_log(f"Status updated: {status_text}")
 
     def add_debug_log(self, message: str):
         """Add a debug message"""
