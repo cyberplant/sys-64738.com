@@ -2275,7 +2275,8 @@ class C64Emulator:
         # Use _read_word to ensure we read from KERNAL ROM correctly
         reset_addr = self.cpu._read_word(0xFFFC)
         self.cpu.state.pc = reset_addr
-        print(f"CPU reset vector: ${reset_addr:04X}")
+        if self.rich_interface:
+            self.rich_interface.add_debug_log(f"🔄 CPU reset vector: ${reset_addr:04X}")
     
     def _initialize_c64(self) -> None:
         """Initialize C64 to a known state"""
@@ -2413,7 +2414,8 @@ class C64Emulator:
         self.memory.cia1_timer_b.latch = 0xFFFF
         self.memory.cia1_timer_b.counter = 0xFFFF
         
-        print("C64 initialized")
+        if self.rich_interface:
+            self.rich_interface.add_debug_log("🎮 C64 initialized")
     
     def load_prg(self, prg_path: str) -> None:
         """Load a PRG file into memory"""
@@ -2468,16 +2470,14 @@ class C64Emulator:
                     debug_msg = f"📺 Screen update #{update_count}: {non_spaces} non-space characters"
                     if self.rich_interface:
                         self.rich_interface.add_debug_log(debug_msg)
-                    print(debug_msg)
 
                     # Show first line if there's content
                     if non_spaces > 0:
                         first_line = ''.join(self.text_screen[0]).rstrip()
                         if first_line:
-                            line_msg = f"First line: '{first_line}'"
+                            line_msg = f"📝 First line: '{first_line}'"
                             if self.rich_interface:
                                 self.rich_interface.add_debug_log(line_msg)
-                            print(f"   {line_msg}")
 
                 # Update Rich debug panel
                 if self.rich_interface:
@@ -2486,7 +2486,11 @@ class C64Emulator:
 
                 time.sleep(self.screen_update_interval)
             except Exception as e:
-                print(f"Screen update error: {e}")
+                error_msg = f"❌ Screen update error: {e}"
+                if self.rich_interface:
+                    self.rich_interface.add_debug_log(error_msg)
+                else:
+                    print(error_msg)
                 pass
     
     def run(self, max_cycles: int = 1000000) -> None:
@@ -2546,15 +2550,20 @@ class C64Emulator:
             if self.cpu.state.stopped:
                 # CPU is stopped (KIL instruction) - this is expected, just break
                 if self.debug:
-                    print(f"CPU stopped at PC=${self.cpu.state.pc:04X} (KIL instruction)")
+                    debug_msg = f"🛑 CPU stopped at PC=${self.cpu.state.pc:04X} (KIL instruction)"
+                    if self.rich_interface:
+                        self.rich_interface.add_debug_log(debug_msg)
                 break
             elif self.cpu.state.pc == last_pc:
                 stuck_count += 1
                 if stuck_count > 1000:
                     if self.debug:
                         opcode = self.memory.read(self.cpu.state.pc)
-                        print(f"Warning: PC stuck at ${self.cpu.state.pc:04X} (opcode ${opcode:02X}) for {stuck_count} steps")
-                        print(f"  This usually means an opcode is not implemented or not advancing PC correctly")
+                        debug_msg1 = f"⚠️ PC stuck at ${self.cpu.state.pc:04X} (opcode ${opcode:02X}) for {stuck_count} steps"
+                        debug_msg2 = "  This usually means an opcode is not implemented or not advancing PC correctly"
+                        if self.rich_interface:
+                            self.rich_interface.add_debug_log(debug_msg1)
+                            self.rich_interface.add_debug_log(debug_msg2)
                     # Don't try to advance - this masks the real problem
                     # Instead, stop execution to prevent infinite loops
                     self.running = False
@@ -2569,7 +2578,9 @@ class C64Emulator:
             # Periodic status logging (less frequent to avoid overhead)
             if self.debug and cycles % 100000 == 0:
                 state = self.get_cpu_state()
-                print(f"Cycles: {cycles}, PC=${state['pc']:04X}, A=${state['a']:02X}")
+                debug_msg = f"🔄 Cycles: {cycles}, PC=${state['pc']:04X}, A=${state['a']:02X}"
+                if self.rich_interface:
+                    self.rich_interface.add_debug_log(debug_msg)
             
             # Log periodic status if UDP debug is enabled (less frequent)
             if self.udp_debug and self.udp_debug.enabled and cycles % 100000 == 0:
@@ -2595,7 +2606,8 @@ class C64Emulator:
                 }.get(pc, "UNKNOWN")
                 if self.rich_interface:
                     self.rich_interface.add_debug_log(f"🔧 ENTERING {routine_name} at PC=${pc:04X}")
-                print(f"🔧 ENTERING {routine_name} at cycle {cycles}, PC=${pc:04X}")
+                else:
+                    print(f"🔧 ENTERING {routine_name} at cycle {cycles}, PC=${pc:04X}")
                 if pc == 0xFD15:  # RESTOR
                     # Check stack contents
                     sp = self.cpu.state.sp
@@ -2785,7 +2797,7 @@ class C64Emulator:
             15: "bright_white"    # Light gray
         }
 
-        console = Console(width=80, legacy_windows=False)
+        console = Console(legacy_windows=False)
         with self.screen_lock:
             # Create a text object for the entire screen
             screen_text = Text()
@@ -3051,9 +3063,8 @@ def main():
     emu = C64Emulator()
     emu.debug = args.debug
     if args.debug:
-        print("Debug mode enabled")
         if emu.rich_interface:
-            emu.rich_interface.add_debug_log("Debug mode enabled")
+            emu.rich_interface.add_debug_log("🐛 Debug mode enabled")
     emu.screen_update_interval = args.screen_update_interval
     emu.no_colors = args.no_colors
     
@@ -3061,14 +3072,17 @@ def main():
     if args.udp_debug:
         emu.udp_debug = UdpDebugLogger(port=args.udp_debug_port, host=args.udp_debug_host)
         emu.udp_debug.enable()
-        print(f"UDP debug logging enabled (async): {args.udp_debug_host}:{args.udp_debug_port}")
+        if emu.rich_interface:
+            emu.rich_interface.add_debug_log(f"📡 UDP debug logging enabled: {args.udp_debug_host}:{args.udp_debug_port}")
         # Test UDP connection
         try:
             test_msg = {'type': 'test', 'message': 'UDP debug initialized'}
             emu.udp_debug.send('test', test_msg)
-            print("UDP test message sent successfully")
+            if emu.rich_interface:
+                emu.rich_interface.add_debug_log("✅ UDP test message sent successfully")
         except Exception as e:
-            print(f"UDP test failed: {e}")
+            if emu.rich_interface:
+                emu.rich_interface.add_debug_log(f"❌ UDP test failed: {e}")
     
     # Pass UDP debug logger to memory
     if emu.udp_debug:
@@ -3076,15 +3090,14 @@ def main():
     
     # Set video standard
     emu.memory.video_standard = args.video_standard
-    print(f"Video standard: {args.video_standard.upper()}")
+    if emu.rich_interface:
+        emu.rich_interface.add_debug_log(f"📺 Video standard: {args.video_standard.upper()}")
 
     # Determine if Rich will be active
     server_active = bool(args.tcp_port or args.udp_port)
     rich_will_be_active = not server_active and not args.no_colors
 
     # Load ROMs
-    if not rich_will_be_active:
-        print("Loading ROMs...")
     emu.load_roms(args.rom_dir)
 
     # Load PRG if provided
@@ -3094,12 +3107,14 @@ def main():
     # Initialize CPU (use _read_word to ensure correct byte order and ROM mapping)
     reset_vector = emu.cpu._read_word(0xFFFC)
     emu.cpu.state.pc = reset_vector
-    print(f"Reset vector: ${reset_vector:04X}")
+    if emu.rich_interface:
+        emu.rich_interface.add_debug_log(f"🔄 Reset vector: ${reset_vector:04X}")
     
     if args.debug:
-        print(f"Initial CPU state: PC=${emu.cpu.state.pc:04X}, A=${emu.cpu.state.a:02X}, X=${emu.cpu.state.x:02X}, Y=${emu.cpu.state.y:02X}")
-        print(f"Memory config ($01): ${emu.memory.ram[0x01]:02X}")
-        print(f"Screen memory sample ($0400-$040F): {[hex(emu.memory.ram[0x0400 + i]) for i in range(16)]}")
+        if emu.rich_interface:
+            emu.rich_interface.add_debug_log(f"🖥️ Initial CPU state: PC=${emu.cpu.state.pc:04X}, A=${emu.cpu.state.a:02X}, X=${emu.cpu.state.x:02X}, Y=${emu.cpu.state.y:02X}")
+            emu.rich_interface.add_debug_log(f"💾 Memory config ($01): ${emu.memory.ram[0x01]:02X}")
+            emu.rich_interface.add_debug_log(f"📺 Screen memory sample ($0400-$040F): {[hex(emu.memory.ram[0x0400 + i]) for i in range(16)]}")
     
     # Start server if requested
     server = None
