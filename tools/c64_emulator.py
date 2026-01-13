@@ -29,6 +29,9 @@ try:
     from rich.console import Console
     from rich.text import Text
     from rich.panel import Panel
+    from rich.layout import Layout
+    from rich.live import Live
+    from rich.columns import Columns
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
@@ -668,7 +671,10 @@ class CPU6502:
 
             # Debug: show jiffy updates occasionally
             if hasattr(self, 'debug') and self.debug and jiffy % 10 == 0:
-                print(f"⏰ Jiffy clock: {jiffy} (at cycle {self.state.cycles})")
+                debug_msg = f"⏰ Jiffy clock: {jiffy}"
+                if hasattr(self, 'rich_interface') and self.rich_interface:
+                    self.rich_interface.add_debug_log(debug_msg)
+                print(f"{debug_msg} (at cycle {self.state.cycles})")
 
         # Clear the interrupt by reading ICR (already done in _read_cia1)
         # The pending_irq flag will be cleared when ICR is read
@@ -2038,6 +2044,78 @@ class UdpDebugLogger:
             self.enabled = False
 
 
+@dataclass
+class RichInterface:
+    """Rich-based interface for C64 emulator"""
+    console: Optional['Console'] = None
+    live: Optional['Live'] = None
+    layout: Optional['Layout'] = None
+    debug_logs: List[str] = field(default_factory=list)
+    max_logs: int = 50  # Maximum debug logs to keep
+
+    def __post_init__(self):
+        if RICH_AVAILABLE:
+            try:
+                self.console = Console()
+                self.layout = Layout()
+                self.layout.split_column(
+                    Layout(name="screen", ratio=3),
+                    Layout(name="debug", size=10)
+                )
+                self.live = Live(self.layout, console=self.console, refresh_per_second=4)
+            except Exception as e:
+                print(f"Failed to initialize Rich interface: {e}")
+                self.console = None
+                self.layout = None
+                self.live = None
+
+    def add_debug_log(self, message: str):
+        """Add a debug message to the log"""
+        timestamp = time.strftime("%H:%M:%S")
+        self.debug_logs.append(f"[{timestamp}] {message}")
+        if len(self.debug_logs) > self.max_logs:
+            self.debug_logs.pop(0)
+
+    def update_screen(self, screen_content: str):
+        """Update the screen content"""
+        if self.layout:
+            self.layout["screen"].update(Panel.fit(
+                screen_content,
+                title="C64 Screen Output",
+                border_style="blue",
+                padding=(0, 1)
+            ))
+
+    def update_debug(self):
+        """Update the debug panel"""
+        if self.layout:
+            debug_content = "\n".join(self.debug_logs[-10:])  # Show last 10 logs
+            self.layout["debug"].update(Panel.fit(
+                debug_content or "No debug messages yet...",
+                title=f"Debug Logs ({len(self.debug_logs)} total)",
+                border_style="green",
+                padding=(0, 1)
+            ))
+
+    def start(self):
+        """Start the live display"""
+        if self.live:
+            # Clear the screen and start live display
+            self.console.clear()
+            self.live.start()
+        # Don't print debug messages that interfere with the display
+
+    def stop(self):
+        """Stop the live display"""
+        if self.live:
+            self.live.stop()
+
+    def refresh(self):
+        """Refresh the display"""
+        if self.live:
+            self.live.refresh()
+
+
 class C64Emulator:
     """Main C64 emulator"""
     
@@ -2050,6 +2128,7 @@ class C64Emulator:
         self.debug = False
         self.no_colors = False  # ANSI color output enabled by default
         self.udp_debug = None  # Will be set if UDP debugging is enabled
+        self.rich_interface = RichInterface()  # Rich interface for display
         self.screen_update_thread = None
         self.screen_update_interval = 0.1  # Update screen every 100ms
         self.screen_lock = threading.Lock()
@@ -2276,6 +2355,11 @@ class C64Emulator:
                 self._update_text_screen()
                 update_count += 1
 
+                # Update Rich interface screen
+                if self.rich_interface and not self.no_colors:
+                    screen_content = self.render_text_screen(no_colors=False)
+                    self.rich_interface.update_screen(screen_content)
+
                 # Show screen summary periodically when debug is enabled
                 if hasattr(self, 'debug') and self.debug and update_count % 10 == 0:
                     # Count non-space characters to see if there's content
@@ -2285,13 +2369,24 @@ class C64Emulator:
                             if char != ' ':
                                 non_spaces += 1
 
-                    print(f"📺 Screen update #{update_count}: {non_spaces} non-space characters")
+                    debug_msg = f"📺 Screen update #{update_count}: {non_spaces} non-space characters"
+                    if self.rich_interface:
+                        self.rich_interface.add_debug_log(debug_msg)
+                    print(debug_msg)
 
                     # Show first line if there's content
                     if non_spaces > 0:
                         first_line = ''.join(self.text_screen[0]).rstrip()
                         if first_line:
-                            print(f"   First line: '{first_line}'")
+                            line_msg = f"First line: '{first_line}'"
+                            if self.rich_interface:
+                                self.rich_interface.add_debug_log(line_msg)
+                            print(f"   {line_msg}")
+
+                # Update Rich debug panel
+                if self.rich_interface:
+                    self.rich_interface.update_debug()
+                    self.rich_interface.refresh()
 
                 time.sleep(self.screen_update_interval)
             except Exception as e:
@@ -2393,6 +2488,8 @@ class C64Emulator:
                     0xFD15: "RESTOR",
                     0xFF5B: "CINT"
                 }.get(pc, "UNKNOWN")
+                if self.rich_interface:
+                    self.rich_interface.add_debug_log(f"🔧 ENTERING {routine_name} at PC=${pc:04X}")
                 print(f"🔧 ENTERING {routine_name} at cycle {cycles}, PC=${pc:04X}")
                 if pc == 0xFD15:  # RESTOR
                     # Check stack contents
@@ -2401,7 +2498,10 @@ class C64Emulator:
                         ret_low = self.memory.read(0x100 + ((sp + 1) & 0xFF))
                         ret_high = self.memory.read(0x100 + ((sp + 2) & 0xFF))
                         return_addr = ret_low | (ret_high << 8)
-                        print(f"   Stack SP=${sp:02X}, return addr=${return_addr:04X}")
+                        debug_msg = f"   Stack SP=${sp:02X}, return addr=${return_addr:04X}"
+                        if self.rich_interface:
+                            self.rich_interface.add_debug_log(debug_msg)
+                        print(debug_msg)
                 elif pc == 0xFF5B:  # CINT - log opcodes it executes
                     print(f"   CINT will execute opcodes...")
 
@@ -2413,9 +2513,15 @@ class C64Emulator:
 
             # Debug: Log when PC reaches dangerous areas
             if self.debug and pc == 0x0000:
-                print(f"🚨 DANGER: PC reached $0000 at cycle {cycles}")
+                debug_msg = f"🚨 DANGER: PC reached $0000"
+                if self.rich_interface:
+                    self.rich_interface.add_debug_log(debug_msg)
+                print(f"{debug_msg} at cycle {cycles}")
                 # Show recent PC history
-                print(f"   Recent PCs: {[f'${p:04X}' for p in pc_history[-10:]]}")
+                history_msg = f"Recent PCs: {[f'${p:04X}' for p in pc_history[-10:]]}"
+                if self.rich_interface:
+                    self.rich_interface.add_debug_log(history_msg)
+                print(f"   {history_msg}")
 
             # Debug: Log RTS from boot routines
             if self.debug and pc == 0x60 and last_pc in [0xFDA3, 0xFD50, 0xFD15, 0xFF5B]:  # RTS
@@ -2425,6 +2531,8 @@ class C64Emulator:
                     0xFD15: "RESTOR",
                     0xFF5B: "CINT"
                 }.get(last_pc, "UNKNOWN")
+                if self.rich_interface:
+                    self.rich_interface.add_debug_log(f"✅ COMPLETED {routine_name}")
                 print(f"✅ COMPLETED {routine_name} at cycle {cycles}")
 
             # Debug: Log post-boot sequence
@@ -2838,6 +2946,8 @@ def main():
     emu.debug = args.debug
     if args.debug:
         print("Debug mode enabled")
+        if emu.rich_interface:
+            emu.rich_interface.add_debug_log("Debug mode enabled")
     emu.screen_update_interval = args.screen_update_interval
     emu.no_colors = args.no_colors
     
@@ -2888,6 +2998,15 @@ def main():
         print("Server started. Use commands like: STATUS, STEP, RUN, MEMORY, DUMP, SCREEN, LOAD")
         print("Press Ctrl+C to stop")
     
+    # Start Rich interface if available and not in server mode
+    rich_active = not server and RICH_AVAILABLE and not args.no_colors
+    if rich_active:
+        emu.rich_interface.start()
+        emu.rich_interface.add_debug_log("C64 Emulator started")
+        emu.rich_interface.add_debug_log("Rich interface active")
+    else:
+        print("Rich interface not available, using text mode")
+
     # Run emulator
     try:
         if server:
@@ -2896,7 +3015,8 @@ def main():
             while server.running and emu.running:
                 time.sleep(0.1)
         else:
-            print("Running emulator...")
+            if not rich_active:
+                print("Running emulator...")
             emu.run(args.max_cycles)
     except KeyboardInterrupt:
         print("\nStopping emulator...")
@@ -2912,29 +3032,23 @@ def main():
             f.write(memory_dump)
         print(f"Memory dumped to {args.dump_memory}")
     
-    # Show screen
+    # Show final screen (only if Rich was not used)
     if not server or not server.running:
-        emu._update_text_screen()
-
-        if RICH_AVAILABLE and not args.no_colors:
-            console = Console()
-            screen_content = emu.render_text_screen(no_colors=False)
-            panel = Panel.fit(
-                screen_content,
-                title="C64 Screen Output",
-                border_style="blue",
-                padding=(0, 1)
-            )
-            console.print(panel)
-        else:
-            print("\nScreen output:")
+        if not (RICH_AVAILABLE and not args.no_colors):
+            # Only show final screen if Rich was not used
+            emu._update_text_screen()
+            print("\nFinal Screen output:")
             print(emu.render_text_screen(no_colors=args.no_colors))
     
+    # Stop Rich interface
+    if emu.rich_interface:
+        emu.rich_interface.stop()
+
     # Stop screen update thread
     emu.running = False
     if emu.screen_update_thread and emu.screen_update_thread.is_alive():
         emu.screen_update_thread.join(timeout=1.0)
-    
+
     # Close UDP debug logger
     if emu.udp_debug:
         emu.udp_debug.close()
