@@ -590,10 +590,6 @@ class CPU6502:
                 # Reset consecutive CR counter on successful CR
                 if hasattr(self, 'interface') and self.interface:
                     self.interface.consecutive_cr_count = 0
-            else:
-                # Reset consecutive CR counter on non-CR characters
-                if hasattr(self, 'interface') and self.interface:
-                    self.interface.consecutive_cr_count = 0
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space
