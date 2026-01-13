@@ -31,7 +31,7 @@ from rich.console import Console
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Static, Header, Footer
+from textual.widgets import Static, Header, Footer, RichLog
 
 
 # C64 Memory Map Constants
@@ -2165,15 +2165,16 @@ class TextualInterface(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Static("Loading C64...", id="c64-display")
-        yield Static("", id="debug-panel")
+        yield RichLog(id="c64-display", auto_scroll=False)
+        yield RichLog(id="debug-panel", auto_scroll=True)
         yield Static("Initializing...", id="status-bar")
         yield Footer()
 
     def on_mount(self):
         """Called when the app is mounted"""
-        self.c64_display = self.query_one("#c64-display", Static)
-        self.debug_logs = self.query_one("#debug-panel", Static)
+        self.c64_display = self.query_one("#c64-display", RichLog)
+        self.c64_display.write("Loading C64...")
+        self.debug_logs = self.query_one("#debug-panel", RichLog)
         self.status_bar = self.query_one("#status-bar", Static)
 
         # Debug: check if widgets are found
@@ -2258,7 +2259,9 @@ class TextualInterface(App):
             if len(screen_content) > 0:
                 first_line = screen_content.split('\n')[0] if '\n' in screen_content else screen_content[:50]
                 #self.add_debug_log(f"🎨 First line: '{first_line}'")
-            self.c64_display.update(screen_content)
+            # For RichLog, clear and write new content
+            self.c64_display.clear()
+            self.c64_display.write(screen_content)
 
             # Update status bar with actual cycle count from emulator
             emu = self.emulator
@@ -2281,17 +2284,12 @@ class TextualInterface(App):
         """Add a debug message"""
         from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.debug_messages.append(f"[{timestamp}] {message}")
-        if len(self.debug_messages) > self.max_logs:
-            self.debug_messages.pop(0)
+        formatted_message = f"[{timestamp}] {message}"
 
         # Update widget if it's available
         if self.debug_logs:
-            # Show more lines to ensure latest are visible
-            content = "\n".join(self.debug_messages[-20:])  # Show last 20 messages
-            self.debug_logs.update(content)
-            # Auto-scroll to bottom
-            self.debug_logs.scroll_end()
+            self.debug_logs.write(formatted_message)
+            # RichLog auto-scrolls when auto_scroll=True
 
     def update_screen(self, screen_content: str):
         """Stub method for compatibility - Textual updates automatically"""
