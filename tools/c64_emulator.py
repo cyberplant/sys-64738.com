@@ -116,6 +116,7 @@ class MemoryMap:
     raster_line: int = 300  # Current raster line (start high so it wraps to 0)
     raster_cycles: int = 0  # Cycle counter for raster timing
     vic_interrupt_state: int = 0  # VIC interrupt state for D019
+    jiffy_cycles: int = 0  # Cycle counter for jiffy clock
     
     def read(self, addr: int) -> int:
         """Read from memory, handling ROM/RAM mapping"""
@@ -228,7 +229,7 @@ class MemoryMap:
         elif reg == 0x12:  # Raster line register
             return self.raster_line & 0xFF
         elif reg == 0x19:  # VIC interrupt register
-            # For now, don't generate VIC interrupts during boot
+            # Disable VIC interrupts completely
             return 0x00
         # Other registers return 0 (simplified)
         return 0
@@ -590,10 +591,22 @@ class CPU6502:
         raster_max = 312 if self.memory.video_standard == "pal" else 263
         self.memory.raster_line = (self.memory.raster_line + 1) % raster_max
 
+        # Update jiffy clock (software-based, ~60Hz)
+        self.memory.jiffy_cycles += cycles
+        if self.memory.jiffy_cycles >= 17000:  # ~60Hz at 1MHz
+            self.memory.jiffy_cycles = 0
+            # Increment jiffy clock at $A0-$A2 (low, mid, high)
+            jiffy = self.memory.read(0xA0) | (self.memory.read(0xA1) << 8) | (self.memory.read(0xA2) << 16)
+            jiffy += 1
+            self.memory.write(0xA0, jiffy & 0xFF)
+            self.memory.write(0xA1, (jiffy >> 8) & 0xFF)
+            self.memory.write(0xA2, (jiffy >> 16) & 0xFF)
+
         # Check for pending IRQ (only if interrupts are enabled)
-        if self.memory.pending_irq and not self._get_flag(0x04):  # I flag clear
-            print(f"🚨 Handling pending IRQ at PC=\\${self.state.pc:04X}")
-            self._handle_irq(udp_debug)
+        # Temporarily disable all interrupts for stability
+        # if self.memory.pending_irq and not self._get_flag(0x04):  # I flag clear
+        #     print(f"🚨 Handling pending IRQ at PC=\\${self.state.pc:04X}")
+        #     self._handle_irq(udp_debug)
 
         return cycles
     
@@ -2172,7 +2185,7 @@ class C64Emulator:
         jiffy_clock = 0x4027  # Approximately 60Hz at 1MHz
         self.memory.cia1_timer_a.latch = jiffy_clock
         self.memory.cia1_timer_a.counter = jiffy_clock
-        self.memory.cia1_timer_a.running = False  # Don't start timer during boot
+        self.memory.cia1_timer_a.running = False  # Keep timer disabled
         self.memory.cia1_timer_a.irq_enabled = False
 
         # Timer B can be used for other purposes
