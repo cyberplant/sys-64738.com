@@ -2055,12 +2055,12 @@ class RichInterface:
     running: bool = True
 
     def __post_init__(self):
-        self.console = Console(width=80)  # Fixed width to prevent wrapping
+        self.console = Console()  # Full width console
         self.layout = Layout()
         # Layout: screen, debug, status (status at bottom)
         self.layout.split_column(
-            Layout(name="screen", size=20),  # Smaller fixed height for C64 screen
-            Layout(name="debug", ratio=1),   # Debug takes remaining space
+            Layout(name="screen", size=20),  # C64 screen
+            Layout(name="debug", size=15),   # Debug logs - half height
             Layout(name="status", size=1)    # Status bar at bottom
         )
         self.live = Live(self.layout, console=self.console, refresh_per_second=10)
