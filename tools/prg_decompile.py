@@ -902,8 +902,8 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False, ex
         
         if text_guess:
             ln, _txt, has_nul = text_guess
-            i += ln + (1 if has_nul else 0)
-            continue
+                i += ln + (1 if has_nul else 0)
+                continue
         
         if info is None:
             i += 1
@@ -1372,21 +1372,21 @@ def decompile_acme(prg: Prg, gap_threshold: int = 128, verbose: bool = False, ex
             text_guess = _guess_text(data, i, min_len=10)
         
         # If we found text, emit it (even if current byte is a valid opcode like 0x20=JSR)
-        if text_guess:
-            ln, txt, has_nul = text_guess
-            total_len = ln + (1 if has_nul else 0)
-            if not spans_label(addr, total_len):
-                alloc_data_label(addr, "text")
-                out.append(f"{data_labels[addr]}:")
-                out.append(f'        !text "{_escape_acme_string(txt)}" ; {addr:04X}: {_fmt_bytes(data[i:i+ln])}')
-                i += ln
-                cur_addr = base + i
-                if has_nul:
-                    out.append(f"        !byte $00{' ' * 34}; {cur_addr:04X}: 00")
-                    i += 1
+            if text_guess:
+                ln, txt, has_nul = text_guess
+                total_len = ln + (1 if has_nul else 0)
+                if not spans_label(addr, total_len):
+                    alloc_data_label(addr, "text")
+                    out.append(f"{data_labels[addr]}:")
+                    out.append(f'        !text "{_escape_acme_string(txt)}" ; {addr:04X}: {_fmt_bytes(data[i:i+ln])}')
+                    i += ln
                     cur_addr = base + i
-                continue
-        
+                    if has_nul:
+                        out.append(f"        !byte $00{' ' * 34}; {cur_addr:04X}: 00")
+                        i += 1
+                        cur_addr = base + i
+                    continue
+
         if info is None:
 
             # Check if this address has a label (shouldn't normally happen for single bytes,
