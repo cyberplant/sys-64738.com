@@ -2090,9 +2090,10 @@ class TextualInterface(App):
     }
     """
 
-    def __init__(self, emulator):
+    def __init__(self, emulator, max_cycles=1000000):
         super().__init__()
         self.emulator = emulator
+        self.max_cycles = max_cycles
         self.debug_messages = []
         self.max_logs = 100
         self.current_cycle = 0
@@ -2134,7 +2135,7 @@ class TextualInterface(App):
     def _run_emulator(self):
         """Run the emulator in background thread"""
         try:
-            self.emulator.run(max_cycles=10000000)  # Run for a long time
+            self.emulator.run(max_cycles=self.max_cycles)
         except Exception as e:
             self.add_debug_log(f"❌ Emulator error: {e}")
 
@@ -2145,12 +2146,9 @@ class TextualInterface(App):
             screen_content = self.emulator.render_text_screen(no_colors=False)
             self.c64_display.update(screen_content)
 
-            # Update cycle count (this is approximate since emulator runs in background)
-            self.current_cycle += 1000  # Rough estimate
-
-            # Update status bar
+            # Update status bar with actual cycle count from emulator
             emu = self.emulator
-            status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Ctrl+X: Quit"
+            status_text = f"🎮 C64 | Cycle: {emu.current_cycles:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Ctrl+X: Quit"
             if self.status_bar:
                 self.status_bar.update(status_text)
 
@@ -2198,6 +2196,7 @@ class C64Emulator:
         self.screen_update_thread = None
         self.screen_update_interval = 0.1  # Update screen every 100ms
         self.screen_lock = threading.Lock()
+        self.current_cycles = 0  # Track current cycle count
 
         # Backward compatibility
         self.rich_interface = self.interface
@@ -2502,6 +2501,7 @@ class C64Emulator:
 
             step_cycles = self.cpu.step(self.udp_debug)
             cycles += step_cycles
+            self.current_cycles = cycles
 
             # Textual interface updates automatically, no manual updates needed
             
@@ -3088,6 +3088,7 @@ def main():
 
     # Start Textual interface if not in server mode
     if not server_active and not args.no_colors:
+        emu.interface.max_cycles = args.max_cycles
         emu.interface.add_debug_log("🚀 C64 Emulator started")
         emu.interface.add_debug_log("🎨 Textual interface with TCSS active")
         emu.interface.run()  # This will block and run the Textual app
