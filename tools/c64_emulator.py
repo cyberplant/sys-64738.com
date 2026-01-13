@@ -533,6 +533,16 @@ class CPU6502:
         if pc == 0xFFD2:
             # This is CHROUT - character should be in accumulator
             char = self.state.a
+
+            # Debug: log CHROUT entry
+            if udp_debug and udp_debug.enabled:
+                udp_debug.send('chrout_entry', {
+                    'char': char,
+                    'pc': pc,
+                    'sp': self.state.sp,
+                    'cycles': getattr(self, 'current_cycles', 0)
+                })
+
             # Get cursor position from zero-page
             cursor_low = self.memory.read(0xD1)
             cursor_high = self.memory.read(0xD2)
@@ -574,12 +584,25 @@ class CPU6502:
             #   Increment SP, read low byte
             #   Increment SP, read high byte
             #   PC = (high << 8) | low + 1
+            sp_before = self.state.sp
             self.state.sp = (self.state.sp + 1) & 0xFF
             pc_low = self.memory.read(0x100 + self.state.sp)
             self.state.sp = (self.state.sp + 1) & 0xFF
             pc_high = self.memory.read(0x100 + self.state.sp)
             # Reconstruct return address: (high << 8) | low + 1
-            self.state.pc = ((pc_high << 8) | pc_low + 1) & 0xFFFF
+            return_addr = ((pc_high << 8) | pc_low) + 1
+            self.state.pc = return_addr & 0xFFFF
+
+            # Debug: log RTS
+            if udp_debug and udp_debug.enabled:
+                udp_debug.send('chrout_rts', {
+                    'sp_before': sp_before,
+                    'sp_after': self.state.sp,
+                    'pc_low': pc_low,
+                    'pc_high': pc_high,
+                    'return_addr': f'${return_addr:04X}',
+                    'new_pc': f'${self.state.pc:04X}'
+                })
             
             # Safety check: if return address is invalid (e.g., $0000), something is wrong
             if self.state.pc == 0x0000:
@@ -601,7 +624,9 @@ class CPU6502:
                     'char': char,
                     'char_hex': f'${char:02X}',
                     'cursor_addr': cursor_addr,
-                    'screen_addr': SCREEN_MEM
+                    'screen_addr': SCREEN_MEM,
+                    'cycle_count': getattr(self, 'current_cycles', 0),
+                    'pc': self.state.pc
                 })
             
             return 20  # Approximate cycles for CHROUT
@@ -2154,9 +2179,9 @@ class TextualInterface(App):
                 self.emulator.current_cycles = cycles
 
                 # Simple stuck detection
-                if cycles % 10000 == 0:
-                    if hasattr(self.emulator, 'interface') and self.emulator.interface:
-                        self.emulator.interface.add_debug_log(f"🔄 Emulator progress: {cycles} cycles")
+                #if cycles % 10000 == 0:
+                    #if hasattr(self.emulator, 'interface') and self.emulator.interface:
+                        #self.emulator.interface.add_debug_log(f"🔄 Emulator progress: {cycles} cycles")
 
         except Exception as e:
             if hasattr(self, 'add_debug_log'):
@@ -2172,10 +2197,10 @@ class TextualInterface(App):
 
             # Update screen display
             screen_content = self.emulator.render_text_screen(no_colors=False)
-            self.add_debug_log(f"🎨 Rendering screen content (length: {len(screen_content)})")
+            #self.add_debug_log(f"🎨 Rendering screen content (length: {len(screen_content)})")
             if len(screen_content) > 0:
                 first_line = screen_content.split('\n')[0] if '\n' in screen_content else screen_content[:50]
-                self.add_debug_log(f"🎨 First line: '{first_line}'")
+                #self.add_debug_log(f"🎨 First line: '{first_line}'")
             self.c64_display.update(screen_content)
 
             # Update status bar with actual cycle count from emulator
@@ -2325,7 +2350,6 @@ class C64Emulator:
     
     def _initialize_c64(self) -> None:
         """Initialize C64 to a known state"""
-        print("🎮 C64 initialization starting")  # Debug print
         # Write to $0000 during reset (as JSC64 does)
         # This is part of the 6510 processor port initialization
         self.memory.ram[0x00] = 0x2F
@@ -2346,7 +2370,9 @@ class C64Emulator:
             if i < 40:  # Stay within first line
                 char_code = ord(char) if char != ' ' else 0x20
                 self.memory.ram[SCREEN_MEM + i] = char_code
-                print(f"🎨 Screen mem ${SCREEN_MEM + i:04X} = ${char_code:02X} ('{char}')")  # Temporary print
+                # Log to debug if interface exists
+                if hasattr(self, 'interface') and self.interface:
+                    self.interface.add_debug_log(f"🎨 Init: Screen mem ${SCREEN_MEM + i:04X} = ${char_code:02X} ('{char}')")
                 # Log to debug if interface exists
                 if hasattr(self, 'interface') and self.interface:
                     self.interface.add_debug_log(f"🎨 Init: Screen mem ${SCREEN_MEM + i:04X} = ${char_code:02X} ('{char}')")
@@ -2574,7 +2600,7 @@ class C64Emulator:
         # Main CPU emulation loop (runs as fast as possible)
         last_time = time.time()
         last_cycle_check = 0
-        
+
         while self.running and cycles < max_cycles:
             pc = self.cpu.state.pc
 
@@ -2774,8 +2800,8 @@ class C64Emulator:
         color_base = COLOR_MEM
 
         # Debug: screen update
-        if hasattr(self, 'interface') and self.interface:
-            self.interface.add_debug_log("🎨 Updating text screen from memory")
+        #if hasattr(self, 'interface') and self.interface:
+            #self.interface.add_debug_log("🎨 Updating text screen from memory")
 
         # Use lock to ensure thread-safe access
         with self.screen_lock:
