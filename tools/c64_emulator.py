@@ -1167,11 +1167,11 @@ class CPU6502:
             elif 0xFF5B <= self.state.pc <= 0xFFFF:
                 halt_msg += " (CINT/KERNAL execution)"
 
-            # Send to Rich interface if available
-            if self.rich_interface:
-                self.rich_interface.add_debug_log(halt_msg)
+            # Send to interface if available
+            if self.interface:
+                self.interface.add_debug_log(halt_msg)
             else:
-                print(halt_msg)  # Fallback to stdout if no Rich interface
+                print(halt_msg)  # Fallback to stdout if no interface
 
             self.state.stopped = True
             return 0
@@ -2176,6 +2176,13 @@ class TextualInterface(App):
         """Stub method for compatibility - Textual handles input automatically"""
         return False
 
+    def action_quit(self):
+        """Quit the emulator"""
+        self.running = False
+        if self.emulator:
+            self.emulator.running = False
+        self.exit()
+
 
 class C64Emulator:
     """Main C64 emulator"""
@@ -3092,6 +3099,7 @@ def main():
         emu.interface.add_debug_log("🚀 C64 Emulator started")
         emu.interface.add_debug_log("🎨 Textual interface with TCSS active")
         emu.interface.run()  # This will block and run the Textual app
+        return  # Exit after Textual interface closes
 
     # Run emulator
     try:
