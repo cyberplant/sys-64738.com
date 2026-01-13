@@ -441,7 +441,8 @@ class CPU6502:
 
         # Special handling for CINT - simulate PAL/NTSC detection
         if pc == 0xFF5B:  # Start of CINT
-            print(f"🎯 CINT: Simulating PAL/NTSC detection, returning immediately")
+            if self.rich_interface:
+                self.rich_interface.add_debug_log("🎯 CINT: Simulating PAL/NTSC detection, returning immediately")
             # CINT is supposed to:
             # 1. Clear screen memory
             # 2. Detect PAL/NTSC by timing
@@ -483,7 +484,8 @@ class CPU6502:
                     for i, char in enumerate(run_command):
                         self.memory.write(kb_buf_ptr + i, char)
                     self.memory.write(0xC6, len(run_command))  # Set buffer length
-                    print("Injected 'RUN' command into keyboard buffer")
+                    if self.rich_interface:
+                        self.rich_interface.add_debug_log("💾 Injected 'RUN' command into keyboard buffer")
 
                 # Return 0 (no input) after injecting RUN
                 self.state.a = 0
@@ -671,7 +673,6 @@ class CPU6502:
                 debug_msg = f"⏰ Jiffy clock: {jiffy}"
                 if hasattr(self, 'rich_interface') and self.rich_interface:
                     self.rich_interface.add_debug_log(debug_msg)
-                print(f"{debug_msg} (at cycle {self.state.cycles})")
 
         # Clear the interrupt by reading ICR (already done in _read_cia1)
         # The pending_irq flag will be cleared when ICR is read
@@ -1103,7 +1104,8 @@ class CPU6502:
             self.memory.pending_irq = False
             self._set_flag(0x04, False)
             self.state.pc = (self.state.pc + 1) & 0xFFFF
-            print(f"   CLI executed, I-flag now {self._get_flag(0x04)}, cleared pending IRQs")
+            if hasattr(self, 'emulator_ref') and self.emulator_ref and hasattr(self.emulator_ref, 'rich_interface') and self.emulator_ref.rich_interface:
+                self.emulator_ref.rich_interface.add_debug_log(f"🚫 CLI executed, I-flag now {self._get_flag(0x04)}, cleared pending IRQs")
             return 2
         elif opcode == 0x78:  # SEI
             self._set_flag(0x04, True)
@@ -1155,14 +1157,21 @@ class CPU6502:
             return 3
         else:
             # Unknown opcode - halt CPU (like VICE does)
-            print(f"CPU halted: Unknown opcode ${opcode:02X} at PC=${self.state.pc:04X}")
+            halt_msg = f"🛑 CPU halted: Unknown opcode ${opcode:02X} at PC=${self.state.pc:04X}"
             # Check location
             if 0xA000 <= self.state.pc <= 0xBFFF:
-                print(f"   This happened in BASIC ROM!")
+                halt_msg += " (BASIC ROM)"
             elif 0xE000 <= self.state.pc <= 0xFFFF:
-                print(f"   This happened in KERNAL ROM!")
+                halt_msg += " (KERNAL ROM)"
             elif 0xFF5B <= self.state.pc <= 0xFFFF:
-                print(f"   This happened during CINT/KERNAL execution!")
+                halt_msg += " (CINT/KERNAL execution)"
+
+            # Send to Rich interface if available
+            if hasattr(self, 'emulator_ref') and self.emulator_ref and hasattr(self.emulator_ref, 'rich_interface') and self.emulator_ref.rich_interface:
+                self.emulator_ref.rich_interface.add_debug_log(halt_msg)
+            else:
+                print(halt_msg)  # Fallback to stdout if no Rich interface
+
             self.state.stopped = True
             return 0
     
@@ -2055,7 +2064,7 @@ class RichInterface:
     running: bool = True
 
     def __post_init__(self):
-        self.console = Console()  # Full width console
+        self.console = Console(width=80)  # Fixed width to prevent wrapping
         self.layout = Layout()
         # Layout: screen, debug, status (status at bottom)
         self.layout.split_column(
@@ -2215,16 +2224,21 @@ class C64Emulator:
         if os.path.exists(basic_path):
             with open(basic_path, "rb") as f:
                 self.memory.basic_rom = f.read()
-                print(f"Loaded BASIC ROM: {len(self.memory.basic_rom)} bytes")
+                if self.rich_interface:
+                    self.rich_interface.add_debug_log(f"💾 Loaded BASIC ROM: {len(self.memory.basic_rom)} bytes")
         else:
-            print(f"Warning: BASIC ROM not found at {basic_path}")
+            if self.rich_interface:
+                self.rich_interface.add_debug_log(f"⚠️ Warning: BASIC ROM not found at {basic_path}")
+            else:
+                print(f"Warning: BASIC ROM not found at {basic_path}")
         
         # Load KERNAL ROM
         kernal_path = os.path.join(rom_dir, "kernal.901227-03.bin")
         if os.path.exists(kernal_path):
             with open(kernal_path, "rb") as f:
                 self.memory.kernal_rom = f.read()
-                print(f"Loaded KERNAL ROM: {len(self.memory.kernal_rom)} bytes")
+                if self.rich_interface:
+                    self.rich_interface.add_debug_log(f"💾 Loaded KERNAL ROM: {len(self.memory.kernal_rom)} bytes")
             # Set reset vector in RAM (KERNAL ROM has it at $FFFC-$FFFD)
             if len(self.memory.kernal_rom) >= (0x10000 - ROM_KERNAL_START):
                 reset_offset = 0xFFFC - ROM_KERNAL_START
@@ -2232,18 +2246,26 @@ class C64Emulator:
                 reset_high = self.memory.kernal_rom[reset_offset + 1]
                 self.memory.ram[0xFFFC] = reset_low
                 self.memory.ram[0xFFFD] = reset_high
-                print(f"Reset vector: ${reset_high:02X}{reset_low:02X}")
+                if self.rich_interface:
+                    self.rich_interface.add_debug_log(f"🔄 Reset vector: ${reset_high:02X}{reset_low:02X}")
         else:
-            print(f"Warning: KERNAL ROM not found at {kernal_path}")
+            if self.rich_interface:
+                self.rich_interface.add_debug_log(f"⚠️ Warning: KERNAL ROM not found at {kernal_path}")
+            else:
+                print(f"Warning: KERNAL ROM not found at {kernal_path}")
         
         # Load Character ROM
         char_path = os.path.join(rom_dir, "characters.901225-01.bin")
         if os.path.exists(char_path):
             with open(char_path, "rb") as f:
                 self.memory.char_rom = f.read()
-                print(f"Loaded Character ROM: {len(self.memory.char_rom)} bytes")
+                if self.rich_interface:
+                    self.rich_interface.add_debug_log(f"💾 Loaded Character ROM: {len(self.memory.char_rom)} bytes")
         else:
-            print(f"Warning: Character ROM not found at {char_path}")
+            if self.rich_interface:
+                self.rich_interface.add_debug_log(f"⚠️ Warning: Character ROM not found at {char_path}")
+            else:
+                print(f"Warning: Character ROM not found at {char_path}")
         
         # Initialize C64 state (sets memory config $01 = 0x37)
         self._initialize_c64()
