@@ -383,8 +383,9 @@ class MemoryMap:
 class CPU6502:
     """6502 CPU emulator"""
     
-    def __init__(self, memory: MemoryMap):
+    def __init__(self, memory: MemoryMap, rich_interface=None):
         self.memory = memory
+        self.rich_interface = rich_interface
         self.state = CPUState()
         # PC will be set from reset vector after ROMs are loaded
         # Don't read it here as ROMs might not be loaded yet
@@ -1104,8 +1105,8 @@ class CPU6502:
             self.memory.pending_irq = False
             self._set_flag(0x04, False)
             self.state.pc = (self.state.pc + 1) & 0xFFFF
-            if hasattr(self, 'emulator_ref') and self.emulator_ref and hasattr(self.emulator_ref, 'rich_interface') and self.emulator_ref.rich_interface:
-                self.emulator_ref.rich_interface.add_debug_log(f"🚫 CLI executed, I-flag now {self._get_flag(0x04)}, cleared pending IRQs")
+            if self.rich_interface:
+                self.rich_interface.add_debug_log(f"🚫 CLI executed, I-flag now {self._get_flag(0x04)}, cleared pending IRQs")
             return 2
         elif opcode == 0x78:  # SEI
             self._set_flag(0x04, True)
@@ -1167,8 +1168,8 @@ class CPU6502:
                 halt_msg += " (CINT/KERNAL execution)"
 
             # Send to Rich interface if available
-            if hasattr(self, 'emulator_ref') and self.emulator_ref and hasattr(self.emulator_ref, 'rich_interface') and self.emulator_ref.rich_interface:
-                self.emulator_ref.rich_interface.add_debug_log(halt_msg)
+            if self.rich_interface:
+                self.rich_interface.add_debug_log(halt_msg)
             else:
                 print(halt_msg)  # Fallback to stdout if no Rich interface
 
@@ -2203,14 +2204,14 @@ class C64Emulator:
     
     def __init__(self):
         self.memory = MemoryMap()
-        self.cpu = CPU6502(self.memory)
+        self.rich_interface = RichInterface()  # Rich interface for display - create first
+        self.cpu = CPU6502(self.memory, self.rich_interface)
         self.running = False
         self.text_screen = [[' '] * 40 for _ in range(25)]
         self.text_colors = [[7] * 40 for _ in range(25)]  # Default: yellow on blue
         self.debug = False
         self.no_colors = False  # ANSI color output enabled by default
         self.udp_debug = None  # Will be set if UDP debugging is enabled
-        self.rich_interface = RichInterface()  # Rich interface for display
         self.screen_update_thread = None
         self.screen_update_interval = 0.1  # Update screen every 100ms
         self.screen_lock = threading.Lock()
