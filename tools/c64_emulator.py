@@ -112,6 +112,9 @@ class MemoryMap:
     cia1_timer_b: CIATimer = field(default_factory=CIATimer)
     cia1_icr: int = 0  # Interrupt Control Register
     pending_irq: bool = False  # Pending IRQ flag
+    video_standard: str = "pal"  # "pal" or "ntsc"
+    raster_line: int = 0  # Current raster line (0-311 for PAL, 0-262 for NTSC)
+    raster_cycles: int = 0  # Cycle counter for raster timing
     
     def read(self, addr: int) -> int:
         """Read from memory, handling ROM/RAM mapping"""
@@ -216,7 +219,14 @@ class MemoryMap:
     
     def _read_vic(self, reg: int) -> int:
         """Read VIC-II register"""
-        # Most VIC registers are write-only, return 0 for now
+        if reg == 0x11:  # VIC control register 1
+            # Bit 7: Raster MSB
+            # Bit 3: 25/24 row mode (1 for 25 rows)
+            raster_msb = (self.raster_line >> 8) & 0x01
+            return (raster_msb << 7) | (1 << 3)  # 25 rows, raster MSB
+        elif reg == 0x12:  # Raster line register
+            return self.raster_line & 0xFF
+        # Other registers return 0 (simplified)
         return 0
     
     def _write_vic(self, reg: int, value: int) -> None:
@@ -549,6 +559,17 @@ class CPU6502:
         # Update CIA timers
         self._update_cia_timers(cycles)
 
+        # Update VIC-II raster line (simulate video timing)
+        # PAL: 312 lines, 50Hz = ~63.7 cycles per line
+        # NTSC: 263 lines, 60Hz = ~63.4 cycles per line
+        cycles_per_line = 63
+        self.memory.raster_cycles += cycles
+        raster_increment = self.memory.raster_cycles // cycles_per_line
+        if raster_increment > 0:
+            raster_max = 312 if self.memory.video_standard == "pal" else 263
+            self.memory.raster_line = (self.memory.raster_line + raster_increment) % raster_max
+            self.memory.raster_cycles %= cycles_per_line
+
         # Check for pending IRQ (only if interrupts are enabled)
         if self.memory.pending_irq and not self._get_flag(0x04):  # I flag clear
             self._handle_irq(udp_debug)
@@ -689,6 +710,33 @@ class CPU6502:
             return self._sty_abs()
         elif opcode == 0x94:  # STY zp,X (undocumented)
             return self._sty_zpx()
+        elif opcode == 0x87:  # SAX zp (undocumented - A & X -> memory)
+            zp_addr = self.memory.read(self.state.pc + 1)
+            self.memory.write(zp_addr, self.state.a & self.state.x)
+            self.state.pc = (self.state.pc + 2) & 0xFFFF
+            return 3
+        elif opcode == 0x80:  # NOP (undocumented)
+            self.state.pc = (self.state.pc + 1) & 0xFFFF
+            return 2
+        elif opcode == 0xA3:  # LAX (indirect,X) (undocumented - LDA + TAX)
+            zp_addr = (self.memory.read(self.state.pc + 1) + self.state.x) & 0xFF
+            addr = self.memory.read(zp_addr) | (self.memory.read((zp_addr + 1) & 0xFF) << 8)
+            self.state.a = self.memory.read(addr)
+            self.state.x = self.state.a
+            self._update_flags(self.state.a)
+            self.state.pc = (self.state.pc + 2) & 0xFFFF
+            return 6
+        elif opcode == 0xC7:  # DCP zp (undocumented - DEC then CMP)
+            zp_addr = self.memory.read(self.state.pc + 1)
+            value = (self.memory.read(zp_addr) - 1) & 0xFF
+            self.memory.write(zp_addr, value)
+            # CMP part
+            result = self.state.a - value
+            self._set_flag(0x01, result >= 0)  # Carry
+            self._set_flag(0x02, result == 0)  # Zero
+            self._set_flag(0x80, (result & 0x80) != 0)  # Negative
+            self.state.pc = (self.state.pc + 2) & 0xFFFF
+            return 5
         
         # Arithmetic
         elif opcode == 0x69:  # ADC imm
@@ -1020,6 +1068,12 @@ class CPU6502:
             return self._bit_zp()
         elif opcode == 0x2C:  # BIT abs
             return self._bit_abs()
+        # Handle common undocumented opcodes as NOPs
+        elif opcode in [0x02, 0x07, 0x0F, 0x12, 0x13, 0x1A, 0x1B, 0x1C, 0x22, 0x32, 0x34, 0x3A, 0x42, 0x43, 0x4B, 0x52, 0x5A, 0x5B, 0x5C, 0x62, 0x6B, 0x72, 0x7A, 0x80, 0x82, 0x8B, 0x8F, 0x9B, 0x9E, 0xA3, 0xAB, 0xAF, 0xB2, 0xBB, 0xBF, 0xC2, 0xC3, 0xCB, 0xD2, 0xD3, 0xDA, 0xDB, 0xDC, 0xDF, 0xE2, 0xE3, 0xEB, 0xEF, 0xF2, 0xF3, 0xFB, 0xFC, 0xFF]:
+            # Undocumented opcode - treat as multi-byte NOP for compatibility
+            # Most undocumented opcodes are 2-3 bytes
+            self.state.pc = (self.state.pc + 2) & 0xFFFF  # Assume 2-byte for safety
+            return 3
         else:
             # Unknown opcode - halt CPU (like VICE does)
             print(f"CPU halted: Unknown opcode ${opcode:02X} at PC=${self.state.pc:04X}")
@@ -2204,6 +2258,12 @@ class C64Emulator:
                 }.get(pc, "UNKNOWN")
                 print(f"🔧 ENTERING {routine_name} at cycle {cycles}, PC=${pc:04X}")
 
+            # Debug: Show raster line during CINT
+            if self.debug and pc >= 0xFF5B and pc <= 0xFFFF:
+                if cycles % 10000 == 0:  # Log every 10k cycles during CINT
+                    raster = self.memory.raster_line
+                    print(f"📺 CINT: raster=${raster:03X}, cycle={cycles}")
+
             # Debug: Log when PC reaches dangerous areas
             if self.debug and pc == 0x0000:
                 print(f"🚨 DANGER: PC reached $0000 at cycle {cycles}")
@@ -2501,7 +2561,8 @@ def main():
     ap.add_argument("--udp-debug-port", type=int, default=64738, help="UDP port for debug events (default: 64738)")
     ap.add_argument("--udp-debug-host", type=str, default="127.0.0.1", help="UDP host for debug events (default: 127.0.0.1)")
     ap.add_argument("--screen-update-interval", type=float, default=0.1, help="Screen update interval in seconds (default: 0.1)")
-    
+    ap.add_argument("--video-standard", choices=["pal", "ntsc"], default="pal", help="Video standard (pal or ntsc, default: pal)")
+
     args = ap.parse_args()
     
     emu = C64Emulator()
@@ -2525,10 +2586,14 @@ def main():
     if emu.udp_debug:
         emu.memory.udp_debug = emu.udp_debug
     
+    # Set video standard
+    emu.memory.video_standard = args.video_standard
+    print(f"Video standard: {args.video_standard.upper()}")
+
     # Load ROMs
     print("Loading ROMs...")
     emu.load_roms(args.rom_dir)
-    
+
     # Load PRG if provided
     if args.prg_file:
         emu.load_prg(args.prg_file)
