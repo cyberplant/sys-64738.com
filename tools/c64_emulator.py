@@ -2174,7 +2174,12 @@ class TextualInterface(App):
             cycles = 0
             max_cycles = self.max_cycles
 
-            while self.emulator.running and cycles < max_cycles:
+            while self.emulator.running:
+                if cycles >= max_cycles:
+                    if hasattr(self.emulator, 'autoquit') and self.emulator.autoquit:
+                        self.emulator.running = False
+                    break
+
                 step_cycles = self.emulator.cpu.step(self.emulator.udp_debug, cycles)
                 cycles += step_cycles
                 self.emulator.current_cycles = cycles
@@ -2192,6 +2197,12 @@ class TextualInterface(App):
 
     def _update_ui(self):
         """Update the UI periodically"""
+        if self.emulator and not self.emulator.running:
+            # Emulator has stopped (e.g., due to autoquit), exit the app
+            self.add_debug_log("🛑 Emulator stopped, exiting...")
+            self.exit()
+            return
+
         if self.emulator:
             # Update text screen from memory
             self.emulator._update_text_screen()
@@ -2602,13 +2613,22 @@ class C64Emulator:
         last_time = time.time()
         last_cycle_check = 0
 
-        while self.running and cycles < max_cycles:
+        while self.running:
             pc = self.cpu.state.pc
 
 
             step_cycles = self.cpu.step(self.udp_debug, cycles)
             cycles += step_cycles
             self.current_cycles = cycles
+
+            # Check if we've reached max cycles
+            if cycles >= max_cycles:
+                if hasattr(self, 'autoquit') and self.autoquit:
+                    self.running = False
+                    stop_reason = "max_cycles_autoquit"
+                else:
+                    stop_reason = "max_cycles_reached"
+                break
 
             # Textual interface updates automatically, no manual updates needed
             
@@ -3200,6 +3220,7 @@ def main():
     ap.add_argument("--dump-memory", help="Dump memory to file after execution")
     ap.add_argument("--debug", action="store_true", help="Enable debug output")
     ap.add_argument("--udp-debug", action="store_true", help="Send debug events via UDP")
+    ap.add_argument("--autoquit", action="store_true", help="Automatically quit when max cycles is reached")
     ap.add_argument("--udp-debug-port", type=int, default=64738, help="UDP port for debug events (default: 64738)")
     ap.add_argument("--udp-debug-host", type=str, default="127.0.0.1", help="UDP host for debug events (default: 127.0.0.1)")
     ap.add_argument("--screen-update-interval", type=float, default=0.1, help="Screen update interval in seconds (default: 0.1)")
@@ -3210,6 +3231,7 @@ def main():
 
     emu = C64Emulator()
     emu.debug = args.debug
+    emu.autoquit = args.autoquit
     if args.debug:
         emu.interface.add_debug_log("🐛 Debug mode enabled")
     emu.screen_update_interval = args.screen_update_interval
