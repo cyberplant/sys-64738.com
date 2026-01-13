@@ -2065,7 +2065,7 @@ class RichInterface:
     running: bool = True
 
     def __post_init__(self):
-        self.console = Console(width=80)  # Fixed width to prevent wrapping
+        self.console = Console()  # Full width console
         self.layout = Layout()
         # Layout: screen, debug, status (status at bottom)
         self.layout.split_column(
@@ -2140,7 +2140,7 @@ class RichInterface:
     def update_screen(self, screen_content: str):
         """Update the screen content"""
         if self.layout:
-            self.layout["screen"].update(Panel.fit(
+            self.layout["screen"].update(Panel(
                 screen_content,
                 title="🏠 C64 Display",
                 border_style="bright_blue",
