@@ -573,10 +573,16 @@ class CPU6502:
             
             # Minimal CHROUT implementation to avoid loops
             if char == 0x0D:  # Carriage return
-                # Simple CR: move to next line, wrap around screen
+                # Move to next line, scroll if at bottom
                 row = (cursor_addr - SCREEN_MEM) // 40
-                row = (row + 1) % 25
-                cursor_addr = SCREEN_MEM + row * 40
+                if row < 24:
+                    # Just move to next row
+                    cursor_addr = SCREEN_MEM + (row + 1) * 40
+                else:
+                    # At bottom row, scroll screen up
+                    self.memory._scroll_screen_up()
+                    # Cursor stays at bottom row (24) after scroll
+                    cursor_addr = SCREEN_MEM + 24 * 40
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space
