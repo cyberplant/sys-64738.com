@@ -386,21 +386,22 @@ class MemoryMap:
         pass
 
     def _scroll_screen_up(self) -> None:
-        """Scroll the screen up by one line"""
-        # Move lines 1-24 up to positions 0-23
-        for row in range(24):
-            src_addr = SCREEN_MEM + (row + 1) * 40
-            dst_addr = SCREEN_MEM + row * 40
-            for col in range(40):
-                char = self.read(src_addr + col)
-                self.write(dst_addr + col, char)
+        """Scroll the screen up by one line (optimized)"""
+        # Use block copy for speed - move 960 bytes up by 40 bytes
+        # Source: SCREEN_MEM + 40 (row 1 start)
+        # Dest: SCREEN_MEM (row 0 start)
+        # Length: 960 bytes (24 rows * 40 cols)
+        src_start = SCREEN_MEM + 40
+        dst_start = SCREEN_MEM
+        length = 960
+
+        # Block copy
+        for i in range(length):
+            self.ram[dst_start + i] = self.ram[src_start + i]
 
         # Clear the bottom line (row 24)
         for col in range(40):
-            self.write(SCREEN_MEM + 24 * 40 + col, 0x20)  # Space
-
-        # Also scroll color memory if implemented
-        # For now, we'll skip color memory scrolling
+            self.ram[SCREEN_MEM + 24 * 40 + col] = 0x20  # Space
 
 
 class CPU6502:
@@ -594,13 +595,9 @@ class CPU6502:
                     self.memory.write(cursor_addr, screen_code)
                     cursor_addr += 1
 
-                    # Check if we need to wrap to next line
-                    col = (cursor_addr - SCREEN_MEM) % 40
-                    if col == 0:  # Just wrapped to next line
-                        row = (cursor_addr - SCREEN_MEM) // 40
-                        if row >= 25:  # Off screen, scroll up and stay at bottom
-                            self.memory._scroll_screen_up()
-                            cursor_addr = SCREEN_MEM + 24 * 40
+                    # Simple wrapping - if we hit end of screen memory, wrap to start
+                    if cursor_addr >= SCREEN_MEM + 1000:
+                        cursor_addr = SCREEN_MEM
             
             # Update cursor position
             self.memory.write(0xD1, cursor_addr & 0xFF)
