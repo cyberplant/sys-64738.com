@@ -385,6 +385,23 @@ class MemoryMap:
         """Write CIA2 register"""
         pass
 
+    def _scroll_screen_up(self) -> None:
+        """Scroll the screen up by one line"""
+        # Move lines 1-24 up to positions 0-23
+        for row in range(24):
+            src_addr = SCREEN_MEM + (row + 1) * 40
+            dst_addr = SCREEN_MEM + row * 40
+            for col in range(40):
+                char = self.read(src_addr + col)
+                self.write(dst_addr + col, char)
+
+        # Clear the bottom line (row 24)
+        for col in range(40):
+            self.write(SCREEN_MEM + 24 * 40 + col, 0x20)  # Space
+
+        # Also scroll color memory if implemented
+        # For now, we'll skip color memory scrolling
+
 
 class CPU6502:
     """6502 CPU emulator"""
@@ -555,10 +572,16 @@ class CPU6502:
             
             # Handle special characters
             if char == 0x0D:  # Carriage return
-                # Simple CR: move to next line, wrap around screen
+                # Move to next line, scroll if at bottom
                 row = (cursor_addr - SCREEN_MEM) // 40
-                row = (row + 1) % 25
-                cursor_addr = SCREEN_MEM + row * 40
+                if row < 24:
+                    # Just move to next row
+                    cursor_addr = SCREEN_MEM + (row + 1) * 40
+                else:
+                    # At bottom row, scroll screen up
+                    self.memory._scroll_screen_up()
+                    # Cursor stays at bottom row (24) after scroll
+                    cursor_addr = SCREEN_MEM + 24 * 40
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space
@@ -575,8 +598,9 @@ class CPU6502:
                     col = (cursor_addr - SCREEN_MEM) % 40
                     if col == 0:  # Just wrapped to next line
                         row = (cursor_addr - SCREEN_MEM) // 40
-                        if row >= 25:  # Off screen, wrap to top
-                            cursor_addr = SCREEN_MEM
+                        if row >= 25:  # Off screen, scroll up and stay at bottom
+                            self.memory._scroll_screen_up()
+                            cursor_addr = SCREEN_MEM + 24 * 40
             
             # Update cursor position
             self.memory.write(0xD1, cursor_addr & 0xFF)
@@ -2275,6 +2299,8 @@ class TextualInterface(App):
         # Update widget if it's available
         if self.debug_logs:
             self.debug_logs.update("\n".join(self.debug_messages[-12:]))
+            # Auto-scroll to bottom
+            self.debug_logs.scroll_end()
 
     def update_screen(self, screen_content: str):
         """Stub method for compatibility - Textual updates automatically"""
@@ -2893,23 +2919,6 @@ class C64Emulator:
         else:
             # Uppercase graphics
             return petscii_char - 128
-
-    def _scroll_screen_up(self) -> None:
-        """Scroll the screen up by one line"""
-        # Move lines 1-24 up to positions 0-23
-        for row in range(24):
-            src_addr = SCREEN_MEM + (row + 1) * 40
-            dst_addr = SCREEN_MEM + row * 40
-            for col in range(40):
-                char = self.memory.read(src_addr + col)
-                self.memory.write(dst_addr + col, char)
-
-        # Clear the bottom line (row 24)
-        for col in range(40):
-            self.memory.write(SCREEN_MEM + 24 * 40 + col, 0x20)  # Space
-
-        # Also scroll color memory if implemented
-        # For now, we'll skip color memory scrolling
 
     def _update_text_screen(self) -> None:
         """Update text screen from screen memory (thread-safe)"""
