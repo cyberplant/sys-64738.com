@@ -163,6 +163,11 @@ class MemoryMap:
                     'addr': addr,
                     'value': value
                 })
+
+        # Trigger screen update when screen or color memory changes
+        if (0x0400 <= addr < 0x0800) or (0xD800 <= addr < 0xDC00):
+            # Screen or color memory changed - mark for update
+            pass  # The periodic update thread will handle this
         
         # ROM areas - writes go to RAM underneath
         if ROM_BASIC_START <= addr < ROM_BASIC_END:
@@ -231,8 +236,12 @@ class MemoryMap:
         elif reg == 0x19:  # VIC interrupt register
             # Disable VIC interrupts completely
             return 0x00
-        # Other registers return 0 (simplified)
-        return 0
+        elif reg == 0x20:  # Border color ($D020)
+            return self._vic_regs.get(0x20, 0x0E) & 0x0F  # Default light blue
+        elif reg == 0x21:  # Background color 0 ($D021)
+            return self._vic_regs.get(0x21, 0x06) & 0x0F  # Default blue
+        # Other registers return stored values or 0
+        return self._vic_regs.get(reg, 0)
     
     def _write_vic(self, reg: int, value: int) -> None:
         """Write VIC-II register"""
@@ -2469,55 +2478,75 @@ class C64Emulator:
                     color_code = self.memory.read(color_base + row * 40 + col) & 0x0F
                 
                 # Convert C64 screen codes to ASCII
-                # C64 screen codes: 0-63 for various characters
-                char = ' '
-                if char_code == 0x00:  # @
+                # C64 screen codes: PETSCII screen codes
+                if char_code == 0x00:
                     char = '@'
-                elif 0x01 <= char_code <= 0x1A:  # A-Z
+                elif 0x01 <= char_code <= 0x1A:
                     char = chr(ord('A') + char_code - 1)
-                elif char_code == 0x20:  # Space
+                elif 0x1B <= char_code <= 0x1F:
+                    char = chr(ord('[') + char_code - 0x1B)  # [\]^_
+                elif char_code == 0x20:
                     char = ' '
-                elif 0x30 <= char_code <= 0x39:  # 0-9
-                    char = chr(ord('0') + char_code - 0x30)
-                elif 0x21 <= char_code <= 0x2F:  # ! " # $ % & ' ( ) * + , - . /
-                    # Map common punctuation
-                    if char_code == 0x21:
-                        char = '!'
-                    elif char_code == 0x22:
-                        char = '"'
-                    elif char_code == 0x27:
-                        char = "'"
-                    elif char_code == 0x2C:
-                        char = ','
-                    elif char_code == 0x2D:
-                        char = '-'
-                    elif char_code == 0x2E:
-                        char = '.'
-                    elif char_code == 0x2F:
-                        char = '/'
-                    else:
-                        char = chr(char_code) if 0x20 <= char_code <= 0x7E else ' '
-                elif 0x3A <= char_code <= 0x3F:  # : ; < = > ?
-                    char = chr(char_code)
-                elif 0x40 <= char_code <= 0x5A:  # @ A-Z (shifted, but same as 0x41-0x5A)
-                    if char_code == 0x40:
-                        char = '@'
+                elif 0x21 <= char_code <= 0x2F:
+                    # Punctuation: ! " # $ % & ' ( ) * + , - . /
+                    punct = '!\"#$%&\'()*+,-./'
+                    if char_code <= 0x20 + len(punct) - 1:
+                        char = punct[char_code - 0x21]
                     else:
                         char = chr(char_code)
-                elif 0x20 <= char_code <= 0x7E:  # Direct ASCII (fallback)
-                    char = chr(char_code)
+                elif 0x30 <= char_code <= 0x39:
+                    char = chr(ord('0') + char_code - 0x30)
+                elif 0x3A <= char_code <= 0x40:
+                    char = chr(char_code)  # : ; < = > ? @
+                elif 0x41 <= char_code <= 0x5A:
+                    char = chr(char_code)  # A-Z
+                elif 0x5B <= char_code <= 0x5F:
+                    char = chr(ord('[') + char_code - 0x5B)  # [\]^_
+                elif char_code >= 0x60 and char_code <= 0x7E:
+                    char = chr(char_code - 0x60) if char_code - 0x60 <= 0x1F else chr(char_code)
+                elif char_code == 0x7F:
+                    char = chr(0x7F)  # DEL
                 else:
                     char = ' '
-                
-                    self.text_screen[row][col] = char
-                    self.text_colors[row][col] = color_code
+
+                self.text_screen[row][col] = char
+                self.text_colors[row][col] = color_code
     
     def render_text_screen(self) -> str:
-        """Render text screen as string (thread-safe)"""
+        """Render text screen as colored string (thread-safe)"""
+        # C64 color to ANSI color mapping
+        c64_colors = {
+            0: 30,   # Black
+            1: 37,   # White
+            2: 31,   # Red
+            3: 36,   # Cyan
+            4: 32,   # Purple (mapped to green for visibility)
+            5: 32,   # Green
+            6: 34,   # Blue
+            7: 33,   # Yellow
+            8: 31,   # Orange (mapped to red)
+            9: 35,   # Brown (mapped to magenta)
+            10: 35,  # Pink (mapped to magenta)
+            11: 36,  # Dark gray (mapped to cyan)
+            12: 37,  # Medium gray (mapped to white)
+            13: 32,  # Light green
+            14: 34,  # Light blue
+            15: 37   # Light gray (mapped to white)
+        }
+
         with self.screen_lock:
             lines = []
-            for row in self.text_screen:
-                lines.append(''.join(row))
+            for row in range(25):
+                line = []
+                for col in range(40):
+                    char = self.text_screen[row][col]
+                    color = self.text_colors[row][col]
+
+                    # Apply ANSI color
+                    ansi_color = c64_colors.get(color, 37)  # Default to white
+                    colored_char = f'\033[{ansi_color}m{char}\033[0m'
+                    line.append(colored_char)
+                lines.append(''.join(line))
             return '\n'.join(lines)
     
     def dump_memory(self, start: int = 0x0000, end: int = 0x10000) -> bytes:
