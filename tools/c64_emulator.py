@@ -659,7 +659,7 @@ class CPU6502:
             self.memory.write(0xA2, (jiffy >> 16) & 0xFF)
 
             # Debug: show jiffy updates occasionally
-            if jiffy % 10 == 0:
+            if hasattr(self, 'debug') and self.debug and jiffy % 10 == 0:
                 print(f"⏰ Jiffy clock: {jiffy} (at cycle {self.state.cycles})")
 
         # Clear the interrupt by reading ICR (already done in _read_cia1)
@@ -2040,6 +2040,7 @@ class C64Emulator:
         self.text_screen = [[' '] * 40 for _ in range(25)]
         self.text_colors = [[7] * 40 for _ in range(25)]  # Default: yellow on blue
         self.debug = False
+        self.no_colors = False  # ANSI color output enabled by default
         self.udp_debug = None  # Will be set if UDP debugging is enabled
         self.screen_update_thread = None
         self.screen_update_interval = 0.1  # Update screen every 100ms
@@ -2261,9 +2262,29 @@ class C64Emulator:
     
     def _screen_update_worker(self) -> None:
         """Worker thread that periodically updates the screen"""
+        update_count = 0
         while self.running:
             try:
                 self._update_text_screen()
+                update_count += 1
+
+                # Show screen summary periodically when debug is enabled
+                if hasattr(self, 'debug') and self.debug and update_count % 10 == 0:
+                    # Count non-space characters to see if there's content
+                    non_spaces = 0
+                    for row in self.text_screen:
+                        for char in row:
+                            if char != ' ':
+                                non_spaces += 1
+
+                    print(f"📺 Screen update #{update_count}: {non_spaces} non-space characters")
+
+                    # Show first line if there's content
+                    if non_spaces > 0:
+                        first_line = ''.join(self.text_screen[0]).rstrip()
+                        if first_line:
+                            print(f"   First line: '{first_line}'")
+
                 time.sleep(self.screen_update_interval)
             except Exception:
                 pass
@@ -2512,7 +2533,7 @@ class C64Emulator:
                 self.text_screen[row][col] = char
                 self.text_colors[row][col] = color_code
     
-    def render_text_screen(self) -> str:
+    def render_text_screen(self, no_colors: bool = False) -> str:
         """Render text screen as colored string (thread-safe)"""
         # C64 color to ANSI color mapping
         c64_colors = {
@@ -2540,12 +2561,15 @@ class C64Emulator:
                 line = []
                 for col in range(40):
                     char = self.text_screen[row][col]
-                    color = self.text_colors[row][col]
 
-                    # Apply ANSI color
-                    ansi_color = c64_colors.get(color, 37)  # Default to white
-                    colored_char = f'\033[{ansi_color}m{char}\033[0m'
-                    line.append(colored_char)
+                    if no_colors:
+                        line.append(char)
+                    else:
+                        color = self.text_colors[row][col]
+                        # Apply ANSI color
+                        ansi_color = c64_colors.get(color, 37)  # Default to white
+                        colored_char = f'\033[{ansi_color}m{char}\033[0m'
+                        line.append(colored_char)
                 lines.append(''.join(line))
             return '\n'.join(lines)
     
@@ -2704,7 +2728,7 @@ class EmulatorServer:
         
         elif cmd == "SCREEN":
             self.emu._update_text_screen()
-            return self.emu.render_text_screen()
+            return self.emu.render_text_screen(no_colors=self.emu.no_colors)
         
         elif cmd == "LOAD":
             if len(parts) < 2:
@@ -2742,12 +2766,16 @@ def main():
     ap.add_argument("--udp-debug-host", type=str, default="127.0.0.1", help="UDP host for debug events (default: 127.0.0.1)")
     ap.add_argument("--screen-update-interval", type=float, default=0.1, help="Screen update interval in seconds (default: 0.1)")
     ap.add_argument("--video-standard", choices=["pal", "ntsc"], default="pal", help="Video standard (pal or ntsc, default: pal)")
+    ap.add_argument("--no-colors", action="store_true", help="Disable ANSI color output")
 
     args = ap.parse_args()
     
     emu = C64Emulator()
     emu.debug = args.debug
+    if args.debug:
+        print("Debug mode enabled")
     emu.screen_update_interval = args.screen_update_interval
+    emu.no_colors = args.no_colors
     
     # Setup UDP debug logging if requested
     if args.udp_debug:
@@ -2824,7 +2852,7 @@ def main():
     if not server or not server.running:
         print("\nScreen output:")
         emu._update_text_screen()
-        print(emu.render_text_screen())
+        print(emu.render_text_screen(no_colors=args.no_colors))
     
     # Stop screen update thread
     emu.running = False
