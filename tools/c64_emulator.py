@@ -410,6 +410,7 @@ class CPU6502:
                     'cycles': self.state.cycles
                 })
         
+
         # Check if we're at a KERNAL vector that needs handling
         # CHRIN ($FFCF) - Input character from keyboard
         if pc == 0xFFCF:
@@ -1069,7 +1070,7 @@ class CPU6502:
         elif opcode == 0x2C:  # BIT abs
             return self._bit_abs()
         # Handle common undocumented opcodes as NOPs
-        elif opcode in [0x02, 0x07, 0x0F, 0x12, 0x13, 0x1A, 0x1B, 0x1C, 0x22, 0x32, 0x34, 0x3A, 0x42, 0x43, 0x4B, 0x52, 0x5A, 0x5B, 0x5C, 0x62, 0x6B, 0x72, 0x7A, 0x80, 0x82, 0x8B, 0x8F, 0x9B, 0x9E, 0xA3, 0xAB, 0xAF, 0xB2, 0xBB, 0xBF, 0xC2, 0xC3, 0xCB, 0xD2, 0xD3, 0xDA, 0xDB, 0xDC, 0xDF, 0xE2, 0xE3, 0xEB, 0xEF, 0xF2, 0xF3, 0xFB, 0xFC, 0xFF]:
+        elif opcode in [0x02, 0x03, 0x07, 0x0F, 0x12, 0x13, 0x1A, 0x1B, 0x1C, 0x1F, 0x22, 0x2F, 0x32, 0x34, 0x3A, 0x42, 0x43, 0x4B, 0x52, 0x5A, 0x5B, 0x5C, 0x62, 0x6B, 0x72, 0x7A, 0x80, 0x82, 0x8B, 0x8F, 0x9B, 0x9E, 0xA3, 0xAB, 0xAF, 0xB2, 0xBB, 0xBF, 0xC2, 0xC3, 0xCB, 0xD2, 0xD3, 0xDA, 0xDB, 0xDC, 0xDF, 0xE2, 0xE3, 0xEB, 0xEF, 0xF2, 0xF3, 0xFB, 0xFC, 0xFF]:
             # Undocumented opcode - treat as multi-byte NOP for compatibility
             # Most undocumented opcodes are 2-3 bytes
             self.state.pc = (self.state.pc + 2) & 0xFFFF  # Assume 2-byte for safety
@@ -1104,8 +1105,8 @@ class CPU6502:
     def _jsr_abs(self) -> int:
         """JSR absolute"""
         addr = self._read_word(self.state.pc + 1)
-        # Push return address (PC + 2) onto stack (address of next instruction - 1)
-        return_addr = (self.state.pc + 2) & 0xFFFF
+        # Push return address (PC + 3) onto stack (address of next instruction)
+        return_addr = (self.state.pc + 3) & 0xFFFF
         pc_high = return_addr >> 8
         pc_low = return_addr & 0xFF
         self.memory.write(0x100 + self.state.sp, pc_high)
@@ -2193,6 +2194,16 @@ class C64Emulator:
         
         while self.running and cycles < max_cycles:
             pc = self.cpu.state.pc
+
+            # Force CINT completion if it takes too long (debugging)
+            if pc == 0xFF5B and cycles > 2040000:
+                print(f"⏰ CINT taking too long, forcing completion at cycle {cycles}")
+                # Simulate RTS: set PC to FCFE, adjust stack
+                self.cpu.state.pc = 0xFCFE
+                self.cpu.state.sp += 2
+                cycles += 1  # Count this as a cycle
+                continue
+
             step_cycles = self.cpu.step(self.udp_debug)
             cycles += step_cycles
             
@@ -2279,6 +2290,34 @@ class C64Emulator:
                     0xFF5B: "CINT"
                 }.get(last_pc, "UNKNOWN")
                 print(f"✅ COMPLETED {routine_name} at cycle {cycles}")
+
+            # Debug: Log post-boot sequence
+            if last_pc == 0xFF5B and pc >= 0xFCFE:  # After CINT, in boot cleanup
+                if pc == 0xFCFE:  # CLI
+                    print(f"🔓 CLI (enable interrupts) at cycle {cycles}")
+                elif pc == 0xFCFF:  # JMP ($A000)
+                    a000_low = self.memory.read(0xA000)
+                    a000_high = self.memory.read(0xA001)
+                    jump_target = a000_low | (a000_high << 8)
+                    print(f"🏃 JMP (\\$A000) -> \\${jump_target:04X} at cycle {cycles}")
+                    print(f"   A000 reads: \\${a000_low:02X} \\${a000_high:02X}")
+                    # Check if target is valid
+                    if jump_target == 0x0000:
+                        print(f"   ❌ ERROR: Jump target is \\$0000!")
+                    elif jump_target < 0x0400:
+                        print(f"   ⚠️ WARNING: Jump target \\${jump_target:04X} is in zero page!")
+
+            # Debug: Track what happens after JMP ($A000)
+            if last_pc == 0xFCFF:  # Just did JMP ($A000)
+                a000_low = self.memory.read(0xA000)
+                a000_high = self.memory.read(0xA001)
+                jump_target = a000_low | (a000_high << 8)
+                if pc == jump_target:
+                    print(f"📚 Entered BASIC at \\${jump_target:04X} (cycle {cycles})")
+
+            # Debug: Why is RESTOR called repeatedly?
+            if pc == 0xFD15 and cycles > 2100000:  # RESTOR called late
+                print(f"🔄 RESTOR called again at cycle {cycles} - why?")
         
         # Determine stop reason
         stop_reason = "unknown"
