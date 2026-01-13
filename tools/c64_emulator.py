@@ -30,6 +30,8 @@ from rich.text import Text
 from rich.panel import Panel
 from rich.layout import Layout
 from rich.live import Live
+import threading
+import queue
 
 
 # C64 Memory Map Constants
@@ -2042,25 +2044,73 @@ class UdpDebugLogger:
 @dataclass
 class RichInterface:
     """Rich-based interface for C64 emulator"""
-    console: Optional['Console'] = None
-    live: Optional['Live'] = None
-    layout: Optional['Layout'] = None
+    console: Console = None
+    live: Live = None
+    layout: Layout = None
     debug_logs: List[str] = field(default_factory=list)
     max_logs: int = 100  # Maximum debug logs to keep
     current_cycle: int = 0
     emulator_ref: Optional[Any] = None  # Reference to emulator for status
+    input_queue: queue.Queue = field(default_factory=queue.Queue)
+    running: bool = True
 
     def __post_init__(self):
-        self.console = Console()
+        self.console = Console(width=80)  # Fixed width to prevent wrapping
         self.layout = Layout()
-        # Create a more complex layout with status bar and full-width panels
+        # Layout: screen, debug, status (status at bottom)
         self.layout.split_column(
-            Layout(name="status", size=2),
-            Layout(name="screen", ratio=2),
-            Layout(name="debug", size=8),
-            Layout(name="buttons", size=2)
+            Layout(name="screen", size=20),  # Smaller fixed height for C64 screen
+            Layout(name="debug", ratio=1),   # Debug takes remaining space
+            Layout(name="status", size=1)    # Status bar at bottom
         )
         self.live = Live(self.layout, console=self.console, refresh_per_second=10)
+
+        # Start input handling thread
+        self.input_thread = threading.Thread(target=self._input_handler, daemon=True)
+        self.input_thread.start()
+
+    def _input_handler(self):
+        """Handle keyboard input"""
+        try:
+            import msvcrt
+            while self.running:
+                if msvcrt.kbhit():
+                    char = msvcrt.getch()
+                    if char == b'\x18':  # Ctrl+X
+                        self.input_queue.put('quit')
+                        break
+        except ImportError:
+            # Unix-like systems - use a simpler approach
+            import select
+            import sys
+            import termios
+            import tty
+
+            # Save terminal settings
+            old_settings = termios.tcgetattr(sys.stdin)
+            try:
+                tty.setcbreak(sys.stdin.fileno())
+                while self.running:
+                    if select.select([sys.stdin], [], [], 0.1)[0]:
+                        char = sys.stdin.read(1)
+                        if ord(char) == 24:  # Ctrl+X (24 = 0x18)
+                            self.input_queue.put('quit')
+                            break
+            finally:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
+    def check_input(self):
+        """Check for keyboard input"""
+        try:
+            command = self.input_queue.get_nowait()
+            if command == 'quit':
+                self.running = False
+                if self.emulator_ref:
+                    self.emulator_ref.running = False
+                return True
+        except queue.Empty:
+            pass
+        return False
 
     def add_debug_log(self, message: str):
         """Add a debug message to the log"""
@@ -2084,9 +2134,9 @@ class RichInterface:
         if self.layout:
             if self.emulator_ref:
                 emu = self.emulator_ref
-                status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X}"
+                status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Ctrl+X: Quit"
             else:
-                status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | Initializing..."
+                status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | Initializing... | Ctrl+X: Quit"
             # Use Text instead of Panel for simpler display
             from rich.text import Text
             status_display = Text(status_text, style="bold yellow")
@@ -2095,21 +2145,11 @@ class RichInterface:
     def update_debug(self):
         """Update the debug panel"""
         if self.layout:
-            debug_content = "\n".join(self.debug_logs[-8:])  # Show last 8 logs
-            self.layout["debug"].update(Panel.fit(
+            debug_content = "\n".join(self.debug_logs[-12:])  # Show last 12 logs
+            self.layout["debug"].update(Panel(
                 debug_content or "No debug messages yet...",
                 title="📋 Debug Logs",
                 border_style="green",
-                padding=(0, 1)
-            ))
-
-    def update_buttons(self):
-        """Update the button bar"""
-        if self.layout:
-            button_text = " [Q] Quit | [R] Reset | [S] Step | [Space] Pause/Resume "
-            self.layout["buttons"].update(Panel.fit(
-                button_text,
-                border_style="red",
                 padding=(0, 1)
             ))
 
@@ -2123,15 +2163,17 @@ class RichInterface:
             self.update_status()
             self.update_screen("Loading C64...")
             self.update_debug()
-            self.update_buttons()
             self.live.start()
         else:
             print("Rich live display not initialized")
 
     def stop(self):
         """Stop the live display"""
+        self.running = False
         if self.live:
             self.live.stop()
+        if hasattr(self, 'input_thread'):
+            self.input_thread.join(timeout=1.0)
 
     def refresh(self):
         """Refresh the display"""
@@ -2452,6 +2494,9 @@ class C64Emulator:
                 self.rich_interface.current_cycle = cycles
                 if cycles % 100 == 0:  # Update status every 100 cycles
                     self.rich_interface.update_status()
+                    # Check for keyboard input
+                    if self.rich_interface.check_input():
+                        break
 
             # Debug: Log PC after CLI
             if pc == 0xFCFE:  # Just executed CLI
