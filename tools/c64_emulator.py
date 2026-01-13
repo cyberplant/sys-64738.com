@@ -25,13 +25,12 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
-from rich.console import Console
-from rich.text import Text
-from rich.panel import Panel
-from rich.layout import Layout
-from rich.live import Live
 import threading
-import queue
+import time
+from textual.app import App, ComposeResult
+from textual.containers import Vertical
+from textual.widgets import Static, Header, Footer
+from textual import events
 
 
 # C64 Memory Map Constants
@@ -383,9 +382,9 @@ class MemoryMap:
 class CPU6502:
     """6502 CPU emulator"""
     
-    def __init__(self, memory: MemoryMap, rich_interface=None):
+    def __init__(self, memory: MemoryMap, interface=None):
         self.memory = memory
-        self.rich_interface = rich_interface
+        self.interface = interface
         self.state = CPUState()
         # PC will be set from reset vector after ROMs are loaded
         # Don't read it here as ROMs might not be loaded yet
@@ -442,8 +441,8 @@ class CPU6502:
 
         # Special handling for CINT - simulate PAL/NTSC detection
         if pc == 0xFF5B:  # Start of CINT
-            if self.rich_interface:
-                self.rich_interface.add_debug_log("🎯 CINT: Simulating PAL/NTSC detection, returning immediately")
+            if self.interface:
+                self.interface.add_debug_log("🎯 CINT: Simulating PAL/NTSC detection, returning immediately")
             # CINT is supposed to:
             # 1. Clear screen memory
             # 2. Detect PAL/NTSC by timing
@@ -485,8 +484,8 @@ class CPU6502:
                     for i, char in enumerate(run_command):
                         self.memory.write(kb_buf_ptr + i, char)
                     self.memory.write(0xC6, len(run_command))  # Set buffer length
-                    if self.rich_interface:
-                        self.rich_interface.add_debug_log("💾 Injected 'RUN' command into keyboard buffer")
+                    if self.interface:
+                        self.interface.add_debug_log("💾 Injected 'RUN' command into keyboard buffer")
 
                 # Return 0 (no input) after injecting RUN
                 self.state.a = 0
@@ -672,8 +671,8 @@ class CPU6502:
             # Debug: show jiffy updates occasionally
             if hasattr(self, 'debug') and self.debug and jiffy % 10 == 0:
                 debug_msg = f"⏰ Jiffy clock: {jiffy}"
-                if hasattr(self, 'rich_interface') and self.rich_interface:
-                    self.rich_interface.add_debug_log(debug_msg)
+                if self.interface:
+                    self.interface.add_debug_log(debug_msg)
 
         # Clear the interrupt by reading ICR (already done in _read_cia1)
         # The pending_irq flag will be cleared when ICR is read
@@ -1105,8 +1104,8 @@ class CPU6502:
             self.memory.pending_irq = False
             self._set_flag(0x04, False)
             self.state.pc = (self.state.pc + 1) & 0xFFFF
-            if self.rich_interface:
-                self.rich_interface.add_debug_log(f"🚫 CLI executed, I-flag now {self._get_flag(0x04)}, cleared pending IRQs")
+            if self.interface:
+                self.interface.add_debug_log(f"🚫 CLI executed, I-flag now {self._get_flag(0x04)}, cleared pending IRQs")
             return 2
         elif opcode == 0x78:  # SEI
             self._set_flag(0x04, True)
@@ -2051,171 +2050,129 @@ class UdpDebugLogger:
             self.enabled = False
 
 
-@dataclass
-class RichInterface:
-    """Rich-based interface for C64 emulator"""
-    console: Console = None
-    live: Live = None
-    layout: Layout = None
-    debug_logs: List[str] = field(default_factory=list)
-    max_logs: int = 100  # Maximum debug logs to keep
-    current_cycle: int = 0
-    emulator_ref: Optional[Any] = None  # Reference to emulator for status
-    input_queue: queue.Queue = field(default_factory=queue.Queue)
-    running: bool = True
+class TextualInterface(App):
+    """Textual-based interface with TCSS styling"""
 
-    def __post_init__(self):
-        # Try with a fixed width to see if that helps with C64 pane sizing
-        import shutil
-        terminal_width = shutil.get_terminal_size().columns
-        self.console = Console(width=min(terminal_width, 120))  # Reasonable max width
-        self.layout = Layout()
-        # Layout: screen, debug, status (status at bottom)
-        self.layout.split_column(
-            Layout(name="screen", size=20),  # C64 screen
-            Layout(name="debug", size=15),   # Debug logs - half height
-            Layout(name="status", size=1)    # Status bar at bottom
-        )
-        # Reduce refresh rate to minimize flickering
-        self.live = Live(self.layout, console=self.console, refresh_per_second=2)
+    CSS = """
+    Screen {
+        background: $surface;
+    }
 
-        # Start input handling thread
-        self.input_thread = threading.Thread(target=self._input_handler, daemon=True)
-        self.input_thread.start()
+    #c64-display {
+        border: solid $primary;
+        height: 20;
+        width: 42;
+        margin: 0 1;
+        padding: 0;
+    }
 
-    def _input_handler(self):
-        """Handle keyboard input"""
+    #debug-panel {
+        border: solid $secondary;
+        height: 15;
+        margin: 0 1;
+        overflow-y: scroll;
+        padding: 0 1;
+    }
+
+    #status-bar {
+        border: solid $accent;
+        height: 1;
+        margin: 0 1;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self, emulator):
+        super().__init__()
+        self.emulator = emulator
+        self.debug_messages = []
+        self.max_logs = 100
+        self.current_cycle = 0
+        self.emulator_thread = None
+        self.running = False
+        # Widget references (set in on_mount)
+        self.c64_display = None
+        self.debug_logs = None
+        self.status_bar = None
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical():
+            yield Static("Loading C64...", id="c64-display")
+            yield Static("", id="debug-panel")
+            yield Static("Initializing...", id="status-bar")
+        yield Footer()
+
+    def on_mount(self):
+        """Called when the app is mounted"""
+        self.c64_display = self.query_one("#c64-display", Static)
+        self.debug_logs = self.query_one("#debug-panel", Static)
+        self.status_bar = self.query_one("#status-bar", Static)
+
+        # Display any buffered messages
+        if self.debug_logs and self.debug_messages:
+            self.debug_logs.update("\n".join(self.debug_messages[-12:]))
+
+        # Start emulator in background thread
+        self.running = True
+        self.emulator_thread = threading.Thread(target=self._run_emulator, daemon=True)
+        self.emulator_thread.start()
+
+        # Update UI periodically
+        self.set_interval(0.1, self._update_ui)
+
+    def _run_emulator(self):
+        """Run the emulator in background thread"""
         try:
-            import msvcrt
-            while self.running:
-                if msvcrt.kbhit():
-                    char = msvcrt.getch()
-                    if char == b'\x18':  # Ctrl+X
-                        self.input_queue.put('quit')
-                        break
-        except ImportError:
-            # Unix-like systems - use a simpler approach
-            try:
-                import select
-                import sys
-                import termios
-                import tty
+            self.emulator.run(max_cycles=10000000)  # Run for a long time
+        except Exception as e:
+            self.add_debug_log(f"❌ Emulator error: {e}")
 
-                # Check if we're in an interactive terminal
-                if not sys.stdin.isatty():
-                    return  # Non-interactive, skip input handling
+    def _update_ui(self):
+        """Update the UI periodically"""
+        if self.emulator:
+            # Update screen
+            screen_content = self.emulator.render_text_screen(no_colors=False)
+            self.c64_display.update(screen_content)
 
-                # Save terminal settings
-                old_settings = termios.tcgetattr(sys.stdin)
-                try:
-                    tty.setcbreak(sys.stdin.fileno())
-                    while self.running:
-                        if select.select([sys.stdin], [], [], 0.1)[0]:
-                            char = sys.stdin.read(1)
-                            if ord(char) == 24:  # Ctrl+X (24 = 0x18)
-                                self.input_queue.put('quit')
-                                break
-                finally:
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-            except (OSError, termios.error):
-                # Not a proper terminal, skip input handling
-                pass
+            # Update cycle count (this is approximate since emulator runs in background)
+            self.current_cycle += 1000  # Rough estimate
 
-    def check_input(self):
-        """Check for keyboard input"""
-        try:
-            command = self.input_queue.get_nowait()
-            if command == 'quit':
-                self.running = False
-                if self.emulator_ref:
-                    self.emulator_ref.running = False
-                return True
-        except queue.Empty:
-            pass
-        return False
+            # Update status
+            emu = self.emulator
+            status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Ctrl+X: Quit"
+            self.status_bar.update(status_text)
 
     def add_debug_log(self, message: str):
-        """Add a debug message to the log"""
-        timestamp = time.strftime("%H:%M:%S")
-        self.debug_logs.append(f"[{timestamp}] {message}")
-        if len(self.debug_logs) > self.max_logs:
-            self.debug_logs.pop(0)
+        """Add a debug message"""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.debug_messages.append(f"[{timestamp}] {message}")
+        if len(self.debug_messages) > self.max_logs:
+            self.debug_messages.pop(0)
 
-    def update_screen(self, screen_content: str):
-        """Update the screen content"""
-        if self.layout:
-            # Use fit() but constrain width to prevent overflow
-            import shutil
-            terminal_width = shutil.get_terminal_size().columns
-            max_panel_width = min(terminal_width - 4, 120)  # Leave some margin
-            self.layout["screen"].update(Panel.fit(
-                screen_content,
-                title="🏠 C64 Display",
-                border_style="bright_blue",
-                padding=(0, 0),
-                width=max_panel_width
-            ))
+        # Update widget if it's available
+        if self.debug_logs:
+            self.debug_logs.update("\n".join(self.debug_messages[-12:]))
 
-    def update_status(self):
-        """Update the status bar"""
-        if self.layout:
-            if self.emulator_ref:
-                emu = self.emulator_ref
-                status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Ctrl+X: Quit"
-            else:
-                status_text = f"🎮 C64 | Cycle: {self.current_cycle:,} | Initializing... | Ctrl+X: Quit"
-            # Use Text instead of Panel for simpler display
-            from rich.text import Text
-            status_display = Text(status_text, style="bold yellow")
-            self.layout["status"].update(status_display)
-
-    def update_debug(self):
-        """Update the debug panel"""
-        if self.layout:
-            debug_content = "\n".join(self.debug_logs[-12:])  # Show last 12 logs
-            self.layout["debug"].update(Panel(
-                debug_content or "No debug messages yet...",
-                title="📋 Debug Logs",
-                border_style="green",
-                padding=(0, 1)
-            ))
-
-    def start(self):
-        """Start the live display"""
-        if self.live:
-            # Initialize all panels
-            self.current_cycle = 0
-            self.update_status()
-            self.update_screen("Loading C64...")
-            self.update_debug()
-            self.live.start()
-        else:
-            if self.emulator_ref and self.emulator_ref.rich_interface:
-                self.emulator_ref.rich_interface.add_debug_log("❌ Rich live display not initialized")
-            else:
-                print("Rich live display not initialized")
-
-    def stop(self):
-        """Stop the live display"""
-        self.running = False
-        if self.live:
-            self.live.stop()
-        if hasattr(self, 'input_thread'):
-            self.input_thread.join(timeout=1.0)
-
-    def refresh(self):
-        """Refresh the display"""
-        if self.live:
-            self.live.refresh()
-
+    async def on_key(self, event: events.Key):
+        """Handle key presses"""
+        if event.key == "ctrl+x":
+            self.running = False
+            if self.emulator:
+                self.emulator.running = False
+            self.exit()
 
 class C64Emulator:
     """Main C64 emulator"""
-    
+
     def __init__(self):
         self.memory = MemoryMap()
-        self.rich_interface = RichInterface()  # Rich interface for display - create first
-        self.cpu = CPU6502(self.memory, self.rich_interface)
+        self.interface = TextualInterface(self)
+
+        # Create CPU with interface reference
+        self.cpu = CPU6502(self.memory, self.interface)
+
         self.running = False
         self.text_screen = [[' '] * 40 for _ in range(25)]
         self.text_colors = [[7] * 40 for _ in range(25)]  # Default: yellow on blue
@@ -2225,6 +2182,9 @@ class C64Emulator:
         self.screen_update_thread = None
         self.screen_update_interval = 0.1  # Update screen every 100ms
         self.screen_lock = threading.Lock()
+
+        # Backward compatibility
+        self.rich_interface = self.interface
         
     def load_roms(self, rom_dir: str = "lib/assets") -> None:
         """Load C64 ROM files"""
@@ -2478,30 +2438,26 @@ class C64Emulator:
                                 non_spaces += 1
 
                     debug_msg = f"📺 Screen update #{update_count}: {non_spaces} non-space characters"
-                    if self.rich_interface:
-                        self.rich_interface.add_debug_log(debug_msg)
+                    if self.interface:
+                        self.interface.add_debug_log(debug_msg)
 
                     # Show first line if there's content
                     if non_spaces > 0:
                         first_line = ''.join(self.text_screen[0]).rstrip()
                         if first_line:
                             line_msg = f"📝 First line: '{first_line}'"
-                            if self.rich_interface:
-                                self.rich_interface.add_debug_log(line_msg)
+                            if self.interface:
+                                self.interface.add_debug_log(line_msg)
 
-                # Update Rich debug panel
-                if self.rich_interface:
-                    self.rich_interface.update_debug()
-                    # Don't manually refresh - let Live handle it automatically
+                # Update Textual debug panel (updates happen automatically in Textual)
 
                 time.sleep(self.screen_update_interval)
             except Exception as e:
                 error_msg = f"❌ Screen update error: {e}"
-                if self.rich_interface:
-                    self.rich_interface.add_debug_log(error_msg)
+                if self.interface:
+                    self.interface.add_debug_log(error_msg)
                 else:
                     print(error_msg)
-                pass
     
     def run(self, max_cycles: int = 1000000) -> None:
         """Run the emulator"""
@@ -3069,43 +3025,34 @@ def main():
     ap.add_argument("--no-colors", action="store_true", help="Disable ANSI color output")
 
     args = ap.parse_args()
-    
+
     emu = C64Emulator()
     emu.debug = args.debug
     if args.debug:
-        if emu.rich_interface:
-            emu.rich_interface.add_debug_log("🐛 Debug mode enabled")
+        emu.interface.add_debug_log("🐛 Debug mode enabled")
     emu.screen_update_interval = args.screen_update_interval
     emu.no_colors = args.no_colors
-    
+
     # Setup UDP debug logging if requested
     if args.udp_debug:
         emu.udp_debug = UdpDebugLogger(port=args.udp_debug_port, host=args.udp_debug_host)
         emu.udp_debug.enable()
-        if emu.rich_interface:
-            emu.rich_interface.add_debug_log(f"📡 UDP debug logging enabled: {args.udp_debug_host}:{args.udp_debug_port}")
+        emu.interface.add_debug_log(f"📡 UDP debug logging enabled: {args.udp_debug_host}:{args.udp_debug_port}")
         # Test UDP connection
         try:
             test_msg = {'type': 'test', 'message': 'UDP debug initialized'}
             emu.udp_debug.send('test', test_msg)
-            if emu.rich_interface:
-                emu.rich_interface.add_debug_log("✅ UDP test message sent successfully")
+            emu.interface.add_debug_log("✅ UDP test message sent successfully")
         except Exception as e:
-            if emu.rich_interface:
-                emu.rich_interface.add_debug_log(f"❌ UDP test failed: {e}")
-    
+            emu.interface.add_debug_log(f"❌ UDP test failed: {e}")
+
     # Pass UDP debug logger to memory
     if emu.udp_debug:
         emu.memory.udp_debug = emu.udp_debug
-    
+
     # Set video standard
     emu.memory.video_standard = args.video_standard
-    if emu.rich_interface:
-        emu.rich_interface.add_debug_log(f"📺 Video standard: {args.video_standard.upper()}")
-
-    # Determine if Rich will be active
-    server_active = bool(args.tcp_port or args.udp_port)
-    rich_will_be_active = not server_active and not args.no_colors
+    emu.interface.add_debug_log(f"📺 Video standard: {args.video_standard.upper()}")
 
     # Load ROMs
     emu.load_roms(args.rom_dir)
@@ -3113,37 +3060,35 @@ def main():
     # Load PRG if provided
     if args.prg_file:
         emu.load_prg(args.prg_file)
-    
+
     # Initialize CPU (use _read_word to ensure correct byte order and ROM mapping)
     reset_vector = emu.cpu._read_word(0xFFFC)
     emu.cpu.state.pc = reset_vector
-    if emu.rich_interface:
-        emu.rich_interface.add_debug_log(f"🔄 Reset vector: ${reset_vector:04X}")
-    
+    emu.interface.add_debug_log(f"🔄 Reset vector: ${reset_vector:04X}")
+
     if args.debug:
-        if emu.rich_interface:
-            emu.rich_interface.add_debug_log(f"🖥️ Initial CPU state: PC=${emu.cpu.state.pc:04X}, A=${emu.cpu.state.a:02X}, X=${emu.cpu.state.x:02X}, Y=${emu.cpu.state.y:02X}")
-            emu.rich_interface.add_debug_log(f"💾 Memory config ($01): ${emu.memory.ram[0x01]:02X}")
-            emu.rich_interface.add_debug_log(f"📺 Screen memory sample ($0400-$040F): {[hex(emu.memory.ram[0x0400 + i]) for i in range(16)]}")
-    
+        emu.interface.add_debug_log(f"🖥️ Initial CPU state: PC=${emu.cpu.state.pc:04X}, A=${emu.cpu.state.a:02X}, X=${emu.cpu.state.x:02X}, Y=${emu.cpu.state.y:02X}")
+        emu.interface.add_debug_log(f"💾 Memory config ($01): ${emu.memory.ram[0x01]:02X}")
+        emu.interface.add_debug_log(f"📺 Screen memory sample ($0400-$040F): {[hex(emu.memory.ram[0x0400 + i]) for i in range(16)]}")
+
     # Start server if requested
     server = None
     if args.tcp_port or args.udp_port:
         server = EmulatorServer(emu, tcp_port=args.tcp_port, udp_port=args.udp_port)
         server.start()
+        emu.interface.add_debug_log("🚀 C64 Emulator started (server mode)")
+        emu.interface.add_debug_log("📡 Server commands: STATUS, STEP, RUN, MEMORY, DUMP, SCREEN, LOAD")
         print("Server started. Use commands like: STATUS, STEP, RUN, MEMORY, DUMP, SCREEN, LOAD")
         print("Press Ctrl+C to stop")
         server_active = True
     else:
         server_active = False
-    
-    # Start Rich interface if not in server mode and colors enabled
-    rich_active = not server_active and not args.no_colors
-    if rich_active:
-        emu.rich_interface.emulator_ref = emu  # Give interface access to emulator
-        emu.rich_interface.start()
-        emu.rich_interface.add_debug_log("🚀 C64 Emulator started")
-        emu.rich_interface.add_debug_log("🎨 Rich interface active")
+
+    # Start Textual interface if not in server mode
+    if not server_active and not args.no_colors:
+        emu.interface.add_debug_log("🚀 C64 Emulator started")
+        emu.interface.add_debug_log("🎨 Textual interface with TCSS active")
+        emu.interface.run()  # This will block and run the Textual app
 
     # Run emulator
     try:
