@@ -2081,23 +2081,31 @@ class RichInterface:
                         break
         except ImportError:
             # Unix-like systems - use a simpler approach
-            import select
-            import sys
-            import termios
-            import tty
-
-            # Save terminal settings
-            old_settings = termios.tcgetattr(sys.stdin)
             try:
-                tty.setcbreak(sys.stdin.fileno())
-                while self.running:
-                    if select.select([sys.stdin], [], [], 0.1)[0]:
-                        char = sys.stdin.read(1)
-                        if ord(char) == 24:  # Ctrl+X (24 = 0x18)
-                            self.input_queue.put('quit')
-                            break
-            finally:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                import select
+                import sys
+                import termios
+                import tty
+
+                # Check if we're in an interactive terminal
+                if not sys.stdin.isatty():
+                    return  # Non-interactive, skip input handling
+
+                # Save terminal settings
+                old_settings = termios.tcgetattr(sys.stdin)
+                try:
+                    tty.setcbreak(sys.stdin.fileno())
+                    while self.running:
+                        if select.select([sys.stdin], [], [], 0.1)[0]:
+                            char = sys.stdin.read(1)
+                            if ord(char) == 24:  # Ctrl+X (24 = 0x18)
+                                self.input_queue.put('quit')
+                                break
+                finally:
+                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+            except (OSError, termios.error):
+                # Not a proper terminal, skip input handling
+                pass
 
     def check_input(self):
         """Check for keyboard input"""
