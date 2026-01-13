@@ -571,31 +571,23 @@ class CPU6502:
             if cursor_addr < SCREEN_MEM or cursor_addr >= SCREEN_MEM + 1000:
                 cursor_addr = SCREEN_MEM
             
-            # Handle special characters
+            # Minimal CHROUT implementation to avoid loops
             if char == 0x0D:  # Carriage return
-                # Move to next line, scroll if at bottom
+                # Simple CR: move to next line, wrap around screen
                 row = (cursor_addr - SCREEN_MEM) // 40
-                if row < 24:
-                    # Just move to next row
-                    cursor_addr = SCREEN_MEM + (row + 1) * 40
-                else:
-                    # At bottom row, scroll screen up
-                    self.memory._scroll_screen_up()
-                    # Cursor stays at bottom row (24) after scroll
-                    cursor_addr = SCREEN_MEM + 24 * 40
+                row = (row + 1) % 25
+                cursor_addr = SCREEN_MEM + row * 40
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space
                 cursor_addr = SCREEN_MEM
             else:
-                # Write character to screen (convert PETSCII to screen code)
+                # Write character to screen (no PETSCII conversion for now)
                 if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
-                    # Convert PETSCII to screen code for display
-                    screen_code = self._petscii_to_screen_code(char)
-                    self.memory.write(cursor_addr, screen_code)
+                    # Just write the character as-is (PETSCII)
+                    self.memory.write(cursor_addr, char)
                     cursor_addr += 1
-
-                    # Simple wrapping - if we hit end of screen memory, wrap to start
+                    # Simple wrapping
                     if cursor_addr >= SCREEN_MEM + 1000:
                         cursor_addr = SCREEN_MEM
             
@@ -2295,7 +2287,9 @@ class TextualInterface(App):
 
         # Update widget if it's available
         if self.debug_logs:
-            self.debug_logs.update("\n".join(self.debug_messages[-12:]))
+            # Show more lines to ensure latest are visible
+            content = "\n".join(self.debug_messages[-20:])  # Show last 20 messages
+            self.debug_logs.update(content)
             # Auto-scroll to bottom
             self.debug_logs.scroll_end()
 
