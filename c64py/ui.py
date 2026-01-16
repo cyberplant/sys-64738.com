@@ -25,7 +25,7 @@ class TextualInterface(App):
     BINDINGS = [
         ("ctrl+x", "quit", "Quit the emulator"),
         ("ctrl+r", "random_screen", "Fill screen with random characters"),
-        ("ctrl+k", "dump_screen", "Dump screen memory to debug logs"),
+        ("ctrl+k", "dump_memory", "Dump screen memory and $0801 to debug logs"),
     ]
 
     CSS = """
@@ -294,8 +294,8 @@ class TextualInterface(App):
             # Trigger immediate screen update
             self.emulator._update_text_screen()
 
-    def action_dump_screen(self):
-        """Dump screen memory sample to debug logs"""
+    def action_dump_memory(self):
+        """Dump screen memory and $0801 bytes to debug logs"""
         if self.emulator:
             # Dump first few lines of screen memory
             lines = []
@@ -313,6 +313,20 @@ class TextualInterface(App):
             self.add_debug_log("📺 Screen memory dump:")
             for line in lines:
                 self.add_debug_log(f"  {line}")
+            
+            # Dump first 16 bytes at $0801
+            self.add_debug_log("📝 Memory dump at $0801 (first 16 bytes):")
+            bytes_list = []
+            for i in range(16):
+                byte_val = self.emulator.memory.read(0x0801 + i)
+                bytes_list.append(f"${byte_val:02X}")
+            self.add_debug_log(f"  {', '.join(bytes_list)}")
+            
+            # Also show BASIC pointers
+            basic_start = self.emulator.memory.read(0x002B) | (self.emulator.memory.read(0x002C) << 8)
+            basic_end = self.emulator.memory.read(0x002D) | (self.emulator.memory.read(0x002E) << 8)
+            self.add_debug_log(f"📝 BASIC start pointer ($2B/$2C): ${basic_start:04X}")
+            self.add_debug_log(f"📝 BASIC end pointer ($2D/$2E): ${basic_end:04X}")
 
     def _ascii_to_petscii(self, char: str) -> int:
         """Convert ASCII character to PETSCII code"""
@@ -400,9 +414,9 @@ class TextualInterface(App):
         cursor_high = self.emulator.memory.read(0xD2)
         cursor_addr = cursor_low | (cursor_high << 8)
         
-        # If cursor is invalid, nothing to do
+        # If cursor is invalid, reset to screen start
         if cursor_addr < SCREEN_MEM or cursor_addr >= SCREEN_MEM + 1000:
-            return
+            cursor_addr = SCREEN_MEM
         
         # Don't backspace if we're at the start of screen
         if cursor_addr <= SCREEN_MEM:
@@ -411,7 +425,14 @@ class TextualInterface(App):
         # Move cursor back one position
         cursor_addr -= 1
         
-        # Erase character at old position (write space)
+        # Handle wrapping to previous line if we're at the start of a line
+        if (cursor_addr - SCREEN_MEM) % 40 == 39 and cursor_addr > SCREEN_MEM:
+            # We wrapped to end of previous line - this shouldn't happen with simple backspace
+            # But if it does, just stay at current position
+            cursor_addr += 1
+            return
+        
+        # Erase character at cursor position (write space)
         if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
             self.emulator.memory.write(cursor_addr, 0x20)  # Space
         
@@ -450,7 +471,7 @@ class TextualInterface(App):
         if not self.emulator or not self.emulator.running:
             return
         
-        # Handle backspace
+        # Handle backspace - always work on screen, regardless of buffer state
         if event.key == "backspace":
             # Remove last character from keyboard buffer if not empty
             kb_buf_base = 0x0277
@@ -460,11 +481,11 @@ class TextualInterface(App):
                 kb_buf_len -= 1
                 self.emulator.memory.write(kb_buf_base + kb_buf_len, 0)
                 self.emulator.memory.write(0xC6, kb_buf_len)
-                # Also erase from screen (backspace)
-                self._handle_backspace()
-                self.add_debug_log(f"⌨️  Backspace -> buffer len={kb_buf_len}")
-            else:
-                self.add_debug_log("⌨️  Keyboard buffer empty, ignoring backspace")
+                self.add_debug_log(f"⌨️  Backspace (removed from buffer) -> buffer len={kb_buf_len}")
+            
+            # Always erase from screen, even if buffer was empty
+            # This handles the case where the character was already read by CHRIN
+            self._handle_backspace()
             event.prevent_default()
             return
         
