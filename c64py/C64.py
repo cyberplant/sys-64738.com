@@ -118,6 +118,7 @@ def main():
     if args.tcp_port or args.udp_port:
         server = EmulatorServer(emu, tcp_port=args.tcp_port, udp_port=args.udp_port)
         server.start()
+        emu.running = True  # Set running flag so server loop doesn't exit immediately
         emu.interface.add_debug_log("🚀 C64 Emulator started (server mode)")
         emu.interface.add_debug_log("📡 Server commands: STATUS, STEP, RUN, MEMORY, DUMP, SCREEN, LOAD")
         print("Server started. Use commands like: STATUS, STEP, RUN, MEMORY, DUMP, SCREEN, LOAD")
