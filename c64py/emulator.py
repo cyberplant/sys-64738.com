@@ -451,19 +451,25 @@ class C64:
                         self.rich_interface.add_debug_log(debug_msg)
                 break
             elif self.cpu.state.pc == last_pc:
-                stuck_count += 1
-                if stuck_count > 1000:
-                    if self.debug:
-                        opcode = self.memory.read(self.cpu.state.pc)
-                        debug_msg1 = f"⚠️ PC stuck at ${self.cpu.state.pc:04X} (opcode ${opcode:02X}) for {stuck_count} steps"
-                        debug_msg2 = "  This usually means an opcode is not implemented or not advancing PC correctly"
-                        if self.rich_interface:
-                            self.rich_interface.add_debug_log(debug_msg1)
-                            self.rich_interface.add_debug_log(debug_msg2)
-                    # Don't try to advance - this masks the real problem
-                    # Instead, stop execution to prevent infinite loops
-                    self.running = False
-                    break
+                # CHRIN ($FFCF) blocks when keyboard buffer is empty - this is expected behavior
+                # Don't count it as stuck
+                if self.cpu.state.pc != 0xFFCF:
+                    stuck_count += 1
+                    if stuck_count > 1000:
+                        if self.debug:
+                            opcode = self.memory.read(self.cpu.state.pc)
+                            debug_msg1 = f"⚠️ PC stuck at ${self.cpu.state.pc:04X} (opcode ${opcode:02X}) for {stuck_count} steps"
+                            debug_msg2 = "  This usually means an opcode is not implemented or not advancing PC correctly"
+                            if self.rich_interface:
+                                self.rich_interface.add_debug_log(debug_msg1)
+                                self.rich_interface.add_debug_log(debug_msg2)
+                        # Don't try to advance - this masks the real problem
+                        # Instead, stop execution to prevent infinite loops
+                        self.running = False
+                        break
+                else:
+                    # PC is at CHRIN - reset stuck count since blocking is expected
+                    stuck_count = 0
             else:
                 stuck_count = 0
             last_pc = self.cpu.state.pc

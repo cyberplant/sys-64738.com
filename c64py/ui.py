@@ -4,6 +4,7 @@ Textual User Interface
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Optional
 
 from rich.console import Console
@@ -142,11 +143,17 @@ class TextualInterface(App):
                 # Stuck detection
                 pc = self.emulator.cpu.state.pc
                 if pc == last_pc:
-                    stuck_count += 1
-                    if stuck_count > 1000:
-                        self.add_debug_log(f"⚠️ PC stuck at ${pc:04X} for {stuck_count} steps - stopping")
-                        self.emulator.running = False
-                        break
+                    # CHRIN ($FFCF) blocks when keyboard buffer is empty - this is expected behavior
+                    # Don't count it as stuck
+                    if pc != 0xFFCF:
+                        stuck_count += 1
+                        if stuck_count > 1000:
+                            self.add_debug_log(f"⚠️ PC stuck at ${pc:04X} for {stuck_count} steps - stopping")
+                            self.emulator.running = False
+                            break
+                    else:
+                        # PC is at CHRIN - reset stuck count since blocking is expected
+                        stuck_count = 0
                 else:
                     stuck_count = 0
                 last_pc = pc
