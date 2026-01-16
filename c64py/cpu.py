@@ -258,6 +258,14 @@ class CPU6502:
                 # In PETSCII, 0x0A would display as 'J' if written, but the real C64 ignores it
                 # Don't write anything, don't advance cursor - just return
                 pass
+            elif char == 0x14:  # Backspace/Delete (PETSCII DEL)
+                # Move cursor left and erase character
+                if cursor_addr > SCREEN_MEM:
+                    cursor_addr -= 1
+                    # Erase character at cursor position
+                    if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
+                        self.memory.write(cursor_addr, 0x20)  # Space
+                # If at start of screen, do nothing (can't backspace further)
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space

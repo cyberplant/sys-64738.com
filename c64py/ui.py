@@ -471,21 +471,23 @@ class TextualInterface(App):
         if not self.emulator or not self.emulator.running:
             return
         
-        # Handle backspace - always work on screen, regardless of buffer state
+        # Handle backspace - inject PETSCII backspace (0x14) into keyboard buffer
+        # This allows BASIC to process the backspace correctly
         if event.key == "backspace":
-            # Remove last character from keyboard buffer if not empty
             kb_buf_base = 0x0277
             kb_buf_len = self.emulator.memory.read(0xC6)
-            if kb_buf_len > 0:
-                # Remove last character from buffer
-                kb_buf_len -= 1
-                self.emulator.memory.write(kb_buf_base + kb_buf_len, 0)
-                self.emulator.memory.write(0xC6, kb_buf_len)
-                self.add_debug_log(f"⌨️  Backspace (removed from buffer) -> buffer len={kb_buf_len}")
             
-            # Always erase from screen, even if buffer was empty
-            # This handles the case where the character was already read by CHRIN
-            self._handle_backspace()
+            # Check if buffer has space (max 10 characters)
+            if kb_buf_len < 10:
+                # Inject PETSCII backspace character (0x14 = cursor left/delete)
+                # This is what the C64 screen editor uses for backspace
+                self.emulator.memory.write(kb_buf_base + kb_buf_len, 0x14)
+                kb_buf_len += 1
+                self.emulator.memory.write(0xC6, kb_buf_len)
+                self.add_debug_log(f"⌨️  Backspace (PETSCII 0x14) -> buffer len={kb_buf_len}")
+            else:
+                self.add_debug_log("⌨️  Keyboard buffer full, ignoring backspace")
+            
             event.prevent_default()
             return
         
