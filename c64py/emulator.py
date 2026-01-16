@@ -390,7 +390,7 @@ class C64:
                 else:
                     print(error_msg)
     
-    def run(self, max_cycles: int = 1000000) -> None:
+    def run(self, max_cycles: Optional[int] = None) -> None:
         """Run the emulator"""
         self.running = True
         cycles = 0
@@ -423,7 +423,7 @@ class C64:
             self.current_cycles = cycles
 
             # Check if we've reached max cycles
-            if cycles >= max_cycles:
+            if max_cycles is not None and cycles >= max_cycles:
                 if hasattr(self, 'autoquit') and self.autoquit:
                     self.running = False
                     stop_reason = "max_cycles_autoquit"
@@ -602,7 +602,7 @@ class C64:
         stop_reason = "unknown"
         if self.cpu.state.stopped:
             stop_reason = "cpu_stopped"
-        elif cycles >= max_cycles:
+        elif max_cycles is not None and cycles >= max_cycles:
             stop_reason = "max_cycles_reached"
         elif not self.running:
             stop_reason = "stuck_pc"

@@ -103,9 +103,9 @@ class EmulatorServer:
             return f"OK CYCLES={total_cycles}"
         
         elif cmd == "RUN":
-            max_cycles = int(parts[1]) if len(parts) > 1 else 1000000
+            max_cycles = int(parts[1]) if len(parts) > 1 else None
             cycles = 0
-            while cycles < max_cycles:
+            while max_cycles is None or cycles < max_cycles:
                 cycles += self.emu.cpu.step()
             return f"OK CYCLES={cycles}"
         

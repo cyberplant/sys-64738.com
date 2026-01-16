@@ -42,7 +42,7 @@ def main():
     ap.add_argument("--rom-dir", default=default_rom_dir, help="Directory containing ROM files")
     ap.add_argument("--tcp-port", type=int, help="TCP port for control interface")
     ap.add_argument("--udp-port", type=int, help="UDP port for control interface")
-    ap.add_argument("--max-cycles", type=int, default=10000000, help="Maximum cycles to run")
+    ap.add_argument("--max-cycles", type=int, default=None, help="Maximum cycles to run (default: unlimited)")
     ap.add_argument("--dump-memory", help="Dump memory to file after execution")
     ap.add_argument("--debug", action="store_true", help="Enable debug output")
     ap.add_argument("--udp-debug", action="store_true", help="Send debug events via UDP")

@@ -52,7 +52,7 @@ python C64.py
 - `--rom-dir DIR`: Directory containing ROM files (default: `../lib/assets`)
 - `--tcp-port PORT`: Enable TCP server on specified port
 - `--udp-port PORT`: Enable UDP server on specified port
-- `--max-cycles N`: Maximum CPU cycles to run (default: 10000000)
+- `--max-cycles N`: Maximum CPU cycles to run (default: unlimited)
 - `--dump-memory FILE`: Dump memory to file after execution
 - `--debug`: Enable debug output
 - `--udp-debug`: Send debug events via UDP

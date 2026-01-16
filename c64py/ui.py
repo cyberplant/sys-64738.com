@@ -70,7 +70,7 @@ class TextualInterface(App):
     }
     """
 
-    def __init__(self, emulator, max_cycles=10000000, fullscreen=False):
+    def __init__(self, emulator, max_cycles=None, fullscreen=False):
         super().__init__()
         self.emulator = emulator
         self.max_cycles = max_cycles
@@ -133,7 +133,7 @@ class TextualInterface(App):
             stuck_count = 0
 
             while self.emulator.running:
-                if cycles >= max_cycles:
+                if max_cycles is not None and cycles >= max_cycles:
                     if hasattr(self.emulator, 'autoquit') and self.emulator.autoquit:
                         self.emulator.running = False
                     break
@@ -167,7 +167,7 @@ class TextualInterface(App):
 
             # Log why we stopped
             if hasattr(self, 'add_debug_log'):
-                if cycles >= max_cycles:
+                if max_cycles is not None and cycles >= max_cycles:
                     self.add_debug_log(f"🛑 Stopped at cycle {cycles} (reached max_cycles={max_cycles})")
                 else:
                     self.add_debug_log(f"🛑 Stopped at cycle {cycles} (unknown reason, stuck_count={stuck_count})")
