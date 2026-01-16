@@ -5,12 +5,13 @@ Textual User Interface
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from rich.console import Console
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
+from textual.events import Key
 from textual.widgets import Static, Header, Footer, RichLog
 
 from .constants import SCREEN_MEM
@@ -163,7 +164,7 @@ class TextualInterface(App):
                 # Detect excessive consecutive CR calls (potential infinite loop)
                 if hasattr(self.emulator.cpu, 'last_chrout_char') and self.emulator.cpu.last_chrout_char == 0x0D:
                     self.consecutive_cr_count += 1
-                    if self.consecutive_cr_count > 500:  # Allow some CRs but not infinite
+                    if self.consecutive_cr_count > 5000:  # Allow some CRs but not infinite
                         self.add_debug_log(f"⚠️ Detected {self.consecutive_cr_count} consecutive CR calls - possible infinite loop, stopping")
                         #self.emulator.running = False
                         #break
@@ -328,5 +329,84 @@ class TextualInterface(App):
             self.add_debug_log("📺 Screen memory dump:")
             for line in lines:
                 self.add_debug_log(f"  {line}")
+
+    def _ascii_to_petscii(self, char: str) -> int:
+        """Convert ASCII character to PETSCII code"""
+        if not char:
+            return 0
+        ascii_code = ord(char)
+        
+        # Basic ASCII to PETSCII conversion
+        # PETSCII uppercase letters: 0x41-0x5A (A-Z)
+        # PETSCII lowercase letters: 0x61-0x7A (a-z) but shifted
+        # For simplicity, map common ASCII to PETSCII
+        if 0x20 <= ascii_code <= 0x5F:  # Space through underscore
+            # Most ASCII printable chars map directly in this range
+            return ascii_code
+        elif 0x61 <= ascii_code <= 0x7A:  # Lowercase a-z
+            # Convert to uppercase PETSCII (shifted)
+            return ascii_code - 0x20  # a-z -> A-Z in PETSCII
+        elif ascii_code == 0x0D or ascii_code == 0x0A:  # CR or LF
+            return 0x0D  # Carriage return
+        else:
+            # Default: return as-is (may need more mapping)
+            return ascii_code & 0xFF
+
+    def on_key(self, event: Key) -> None:
+        """Handle keyboard input and send to C64 keyboard buffer"""
+        # Don't handle keys in fullscreen mode (or handle differently)
+        if self.fullscreen:
+            # In fullscreen, only allow quit
+            if event.key == "ctrl+x" or event.key == "ctrl+q":
+                self.action_quit()
+            return
+        
+        # Handle special keys first
+        if event.key == "ctrl+x" or event.key == "ctrl+q":
+            self.action_quit()
+            return
+        elif event.key == "escape":
+            # ESC might be used for something, but for now just ignore
+            event.prevent_default()
+            return
+        
+        # Only process printable characters when emulator is running
+        if not self.emulator or not self.emulator.running:
+            return
+        
+        # Check if character is printable
+        if event.is_printable and event.character:
+            char = event.character
+            # Convert to PETSCII
+            petscii_code = self._ascii_to_petscii(char)
+            
+            # Put character into keyboard buffer ($0277-$0280)
+            kb_buf_base = 0x0277
+            kb_buf_len = self.emulator.memory.read(0xC6)
+            
+            # Check if buffer has space (max 10 characters)
+            if kb_buf_len < 10:
+                # Add character to end of buffer
+                self.emulator.memory.write(kb_buf_base + kb_buf_len, petscii_code)
+                kb_buf_len += 1
+                self.emulator.memory.write(0xC6, kb_buf_len)
+                self.add_debug_log(f"⌨️  Key pressed: '{char}' (PETSCII ${petscii_code:02X}) -> buffer len={kb_buf_len}")
+            else:
+                self.add_debug_log("⌨️  Keyboard buffer full, ignoring key")
+        elif event.key == "enter":
+            # Enter key = Carriage Return
+            kb_buf_base = 0x0277
+            kb_buf_len = self.emulator.memory.read(0xC6)
+            if kb_buf_len < 10:
+                self.emulator.memory.write(kb_buf_base + kb_buf_len, 0x0D)  # CR
+                kb_buf_len += 1
+                self.emulator.memory.write(0xC6, kb_buf_len)
+                self.add_debug_log(f"⌨️  Enter pressed (CR) -> buffer len={kb_buf_len}")
+            else:
+                self.add_debug_log("⌨️  Keyboard buffer full, ignoring Enter")
+        
+        # Prevent default handling for most keys (so they go to C64, not Textual)
+        if event.is_printable or event.key == "enter":
+            event.prevent_default()
 
 

@@ -605,6 +605,18 @@ class CPU6502:
             self._update_flags(self.state.a)
             self.state.pc = (self.state.pc + 3) & 0xFFFF
             return 4
+        elif opcode == 0xF9:  # SBC absy
+            base = self._read_word(self.state.pc + 1)
+            addr = (base + self.state.y) & 0xFFFF
+            value = self.memory.read(addr)
+            carry = 1 if self._get_flag(0x01) else 0
+            result = self.state.a - value - (1 - carry)
+            self._set_flag(0x01, result >= 0)
+            self._set_flag(0x40, ((self.state.a ^ value) & 0x80) != 0 and ((self.state.a ^ result) & 0x80) != 0)
+            self.state.a = result & 0xFF
+            self._update_flags(self.state.a)
+            self.state.pc = (self.state.pc + 3) & 0xFFFF
+            return 4  # +1 cycle if page boundary crossed, but we'll ignore for simplicity
         
         # Logic
         elif opcode == 0x29:  # AND imm
