@@ -489,32 +489,41 @@ class CPU6502:
         # CHRIN ($FFCF) - Input character from keyboard
         if pc == 0xFFCF:
             # CHRIN - return character from keyboard buffer
-            # For now, return 0 (no input) so BASIC can continue
-            # On boot, keyboard buffer should be empty
+            # Keyboard buffer is at $0277-$0280 (10 bytes)
+            # $C6 contains the number of characters in buffer
             kb_buf_len = self.memory.read(0xC6)  # Number of chars in buffer
             if kb_buf_len > 0:
-                # Read from keyboard buffer
-                kb_buf_ptr = self.memory.read(0xF7) | (self.memory.read(0xF8) << 8)
-                if kb_buf_ptr == 0:
-                    kb_buf_ptr = 0x0277  # Default keyboard buffer
-                char = self.memory.read(kb_buf_ptr)
-                # Remove from buffer
+                # Read first character from buffer (at $0277)
+                kb_buf_base = 0x0277
+                char = self.memory.read(kb_buf_base)
+                
+                # Shift remaining characters down (C64 KERNAL behavior)
+                for i in range(kb_buf_len - 1):
+                    next_char = self.memory.read(kb_buf_base + i + 1)
+                    self.memory.write(kb_buf_base + i, next_char)
+                
+                # Clear the last position
+                self.memory.write(kb_buf_base + kb_buf_len - 1, 0)
+                
+                # Decrement buffer length
                 kb_buf_len = (kb_buf_len - 1) & 0xFF
                 self.memory.write(0xC6, kb_buf_len)
-                self.memory.write(kb_buf_ptr, 0)  # Clear the character
+                
                 self.state.a = char
             else:
                 # No input available - inject "RUN\n" to auto-run loaded programs
                 # Only inject if a program was loaded via command line
+                # Only inject once when buffer is empty (BASIC is ready for input)
                 if self.interface and hasattr(self.interface, 'emulator') and self.interface.emulator.program_loaded:
-                    run_command = b"RUN\x0D"  # RUN + carriage return
                     if not hasattr(self, '_run_injected'):
                         self._run_injected = True
-                        # Put RUN command into keyboard buffer
-                        kb_buf_ptr = 0x0277
+                        run_command = b"RUN\x0D"  # RUN + carriage return
+                        # Put RUN command into keyboard buffer at correct position
+                        kb_buf_base = 0x0277
                         for i, char in enumerate(run_command):
-                            self.memory.write(kb_buf_ptr + i, char)
-                        self.memory.write(0xC6, len(run_command))  # Set buffer length
+                            if i < 10:  # Buffer is only 10 bytes
+                                self.memory.write(kb_buf_base + i, char)
+                        self.memory.write(0xC6, min(len(run_command), 10))  # Set buffer length (max 10)
                         if self.interface:
                             self.interface.add_debug_log("💾 Injected 'RUN' command into keyboard buffer")
 
@@ -2216,6 +2225,14 @@ class TextualInterface(App):
         color: #FFFFFF;
     }
 
+    Screen.fullscreen #c64-display {
+        border: none;
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        width: 100%;
+    }
+
     #debug-panel {
         border: solid $secondary;
         margin: 0 1;
@@ -2234,7 +2251,7 @@ class TextualInterface(App):
     }
     """
 
-    def __init__(self, emulator, max_cycles=10000000):
+    def __init__(self, emulator, max_cycles=10000000, fullscreen=False):
         super().__init__()
         self.emulator = emulator
         self.max_cycles = max_cycles
@@ -2242,27 +2259,38 @@ class TextualInterface(App):
         self.current_cycle = 0
         self.emulator_thread = None
         self.running = False
+        self.fullscreen = fullscreen
         # Widget references (set in on_mount)
         self.c64_display = None
         self.debug_logs = None
         self.status_bar = None
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        if not self.fullscreen:
+            yield Header()
         yield RichLog(id="c64-display", auto_scroll=False)
-        yield RichLog(id="debug-panel", auto_scroll=True)
-        yield Static("Initializing...", id="status-bar")
-        yield Footer()
+        if not self.fullscreen:
+            yield RichLog(id="debug-panel", auto_scroll=True)
+            yield Static("Initializing...", id="status-bar")
+        if not self.fullscreen:
+            yield Footer()
 
     def on_mount(self):
         """Called when the app is mounted"""
+        if self.fullscreen:
+            # In fullscreen mode, add the fullscreen class to the screen
+            self.screen.add_class("fullscreen")
+        
         self.c64_display = self.query_one("#c64-display", RichLog)
         self.c64_display.write("Loading C64...")
-        self.debug_logs = self.query_one("#debug-panel", RichLog)
-        self.status_bar = self.query_one("#status-bar", Static)
+        
+        if not self.fullscreen:
+            self.debug_logs = self.query_one("#debug-panel", RichLog)
+            self.status_bar = self.query_one("#status-bar", Static)
 
-        # Debug: check if widgets are found
-        self.add_debug_log(f"Widgets found: c64={self.c64_display is not None}, debug={self.debug_logs is not None}, status={self.status_bar is not None}")
+        # Debug: check if widgets are found (only in non-fullscreen mode)
+        if not self.fullscreen:
+            self.add_debug_log(f"Widgets found: c64={self.c64_display is not None}, debug={self.debug_logs is not None}, status={self.status_bar is not None}")
 
         # Buffered messages are handled automatically in add_debug_log
 
@@ -2371,14 +2399,15 @@ class TextualInterface(App):
             self.c64_display.clear()
             self.c64_display.write(screen_content)
 
-            # Update status bar with actual cycle count from emulator
-            emu = self.emulator
-            # Read cursor position from memory
-            cursor_row = emu.memory.read(0xD3)
-            cursor_col = emu.memory.read(0xD8)
-            status_text = f"🎮 C64 | Cycle: {emu.current_cycles:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Cursor: {cursor_row},{cursor_col}"
-            if self.status_bar:
-                self.status_bar.update(status_text)
+            # Update status bar with actual cycle count from emulator (only in non-fullscreen mode)
+            if not self.fullscreen:
+                emu = self.emulator
+                # Read cursor position from memory
+                cursor_row = emu.memory.read(0xD3)
+                cursor_col = emu.memory.read(0xD8)
+                status_text = f"🎮 C64 | Cycle: {emu.current_cycles:,} | PC: ${emu.cpu.state.pc:04X} | A: ${emu.cpu.state.a:02X} | X: ${emu.cpu.state.x:02X} | Y: ${emu.cpu.state.y:02X} | SP: ${emu.cpu.state.sp:02X} | Cursor: {cursor_row},{cursor_col}"
+                if self.status_bar:
+                    self.status_bar.update(status_text)
 
             # Debug: show screen content periodically
             if hasattr(self.emulator, 'debug') and self.emulator.debug:
@@ -2390,6 +2419,10 @@ class TextualInterface(App):
 
     def add_debug_log(self, message: str):
         """Add a debug message"""
+        # Skip debug logging in fullscreen mode
+        if self.fullscreen:
+            return
+            
         from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_message = f"[{timestamp}] {message}"
@@ -2584,19 +2617,6 @@ class C64:
         # The C64 typically clears screen during initialization
         for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
             self.memory.ram[addr] = 0x20  # Space character
-
-        # Add test text to see if screen updates work
-        test_text = "C64 EMULATOR TEST"
-        for i, char in enumerate(test_text):
-            if i < 40:  # Stay within first line
-                char_code = ord(char) if char != ' ' else 0x20
-                self.memory.ram[SCREEN_MEM + i] = char_code
-                # Log to debug if interface exists
-                if hasattr(self, 'interface') and self.interface:
-                    self.interface.add_debug_log(f"🎨 Init: Screen mem ${SCREEN_MEM + i:04X} = ${char_code:02X} ('{char}')")
-                # Log to debug if interface exists
-                if hasattr(self, 'interface') and self.interface:
-                    self.interface.add_debug_log(f"🎨 Init: Screen mem ${SCREEN_MEM + i:04X} = ${char_code:02X} ('{char}')")
         
         # Initialize color memory (default: light blue = 14, but we'll use white = 1)
         for addr in range(COLOR_MEM, COLOR_MEM + 1000):
@@ -2624,8 +2644,12 @@ class C64:
         self.memory.ram[0x0286] = 0x0E  # Background color (light blue)
         
         # Initialize cursor position (points to screen start)
-        self.memory.ram[0xD1] = SCREEN_MEM & 0xFF  # Cursor column (low byte)
-        self.memory.ram[0xD2] = (SCREEN_MEM >> 8) & 0xFF  # Cursor row (high byte)
+        # $D1/$D2 store the cursor address (low/high bytes)
+        self.memory.ram[0xD1] = SCREEN_MEM & 0xFF  # Cursor address low byte
+        self.memory.ram[0xD2] = (SCREEN_MEM >> 8) & 0xFF  # Cursor address high byte
+        # Also initialize cursor row/col variables
+        self.memory.ram[0xD3] = 0  # Cursor row (0-24)
+        self.memory.ram[0xD8] = 0  # Cursor column (0-39)
         
         # Initialize KERNAL reset vector at $8000-$8001 to point to BASIC cold start
         # The KERNAL does JMP ($8000) to jump to BASIC after initialization
@@ -2653,6 +2677,9 @@ class C64:
         
         # Initialize keyboard buffer
         self.memory.ram[0xC6] = 0  # Number of characters in buffer
+        # Clear keyboard buffer area ($0277-$0280)
+        for i in range(10):
+            self.memory.ram[0x0277 + i] = 0
         
         # Initialize zero-page status register $6C (used by KERNAL error handler)
         # This is typically initialized to 0 on boot
@@ -3463,16 +3490,19 @@ def main():
     ap.add_argument("--screen-update-interval", type=float, default=0.1, help="Screen update interval in seconds (default: 0.1)")
     ap.add_argument("--video-standard", choices=["pal", "ntsc"], default="pal", help="Video standard (pal or ntsc, default: pal)")
     ap.add_argument("--no-colors", action="store_true", help="Disable ANSI color output")
+    ap.add_argument("--fullscreen", action="store_true", help="Show only C64 screen output (no debug panel or status bar)")
 
     args = ap.parse_args()
 
     emu = C64()
     emu.debug = args.debug
     emu.autoquit = args.autoquit
-    if args.debug:
-        emu.interface.add_debug_log("🐛 Debug mode enabled")
     emu.screen_update_interval = args.screen_update_interval
     emu.no_colors = args.no_colors
+    # Set fullscreen mode early so interface knows about it
+    emu.interface.fullscreen = args.fullscreen
+    if args.debug and not args.fullscreen:
+        emu.interface.add_debug_log("🐛 Debug mode enabled")
 
     # Setup UDP debug logging if requested
     if args.udp_debug:
@@ -3493,7 +3523,8 @@ def main():
 
     # Set video standard
     emu.memory.video_standard = args.video_standard
-    emu.interface.add_debug_log(f"📺 Video standard: {args.video_standard.upper()}")
+    if not args.fullscreen:
+        emu.interface.add_debug_log(f"📺 Video standard: {args.video_standard.upper()}")
 
     # Load ROMs
     emu.load_roms(args.rom_dir)
@@ -3505,9 +3536,10 @@ def main():
     # Initialize CPU (use _read_word to ensure correct byte order and ROM mapping)
     reset_vector = emu.cpu._read_word(0xFFFC)
     emu.cpu.state.pc = reset_vector
-    emu.interface.add_debug_log(f"🔄 Reset vector: ${reset_vector:04X}")
+    if not args.fullscreen:
+        emu.interface.add_debug_log(f"🔄 Reset vector: ${reset_vector:04X}")
 
-    if args.debug:
+    if args.debug and not args.fullscreen:
         emu.interface.add_debug_log(f"🖥️ Initial CPU state: PC=${emu.cpu.state.pc:04X}, A=${emu.cpu.state.a:02X}, X=${emu.cpu.state.x:02X}, Y=${emu.cpu.state.y:02X}")
         emu.interface.add_debug_log(f"💾 Memory config ($01): ${emu.memory.ram[0x01]:02X}")
         emu.interface.add_debug_log(f"📺 Screen memory sample ($0400-$040F): {[hex(emu.memory.ram[0x0400 + i]) for i in range(16)]}")
@@ -3528,8 +3560,10 @@ def main():
     # Start Textual interface if not in server mode
     if not server_active and not args.no_colors:
         emu.interface.max_cycles = args.max_cycles
-        emu.interface.add_debug_log("🚀 C64 Emulator started")
-        emu.interface.add_debug_log("🎨 Textual interface with TCSS active")
+        # fullscreen flag already set earlier
+        if not args.fullscreen:
+            emu.interface.add_debug_log("🚀 C64 Emulator started")
+            emu.interface.add_debug_log("🎨 Textual interface with TCSS active")
         try:
             emu.interface.run()  # This will block and run the Textual app
         finally:
