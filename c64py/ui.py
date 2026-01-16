@@ -390,6 +390,44 @@ class TextualInterface(App):
         # Update the text screen representation for display
         self.emulator._update_text_screen()
 
+    def _handle_backspace(self) -> None:
+        """Handle backspace - erase character at cursor and move cursor back"""
+        if not self.emulator:
+            return
+        
+        # Get cursor position
+        cursor_low = self.emulator.memory.read(0xD1)
+        cursor_high = self.emulator.memory.read(0xD2)
+        cursor_addr = cursor_low | (cursor_high << 8)
+        
+        # If cursor is invalid, nothing to do
+        if cursor_addr < SCREEN_MEM or cursor_addr >= SCREEN_MEM + 1000:
+            return
+        
+        # Don't backspace if we're at the start of screen
+        if cursor_addr <= SCREEN_MEM:
+            return
+        
+        # Move cursor back one position
+        cursor_addr -= 1
+        
+        # Erase character at old position (write space)
+        if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
+            self.emulator.memory.write(cursor_addr, 0x20)  # Space
+        
+        # Update cursor position
+        self.emulator.memory.write(0xD1, cursor_addr & 0xFF)
+        self.emulator.memory.write(0xD2, (cursor_addr >> 8) & 0xFF)
+        
+        # Also update row and column variables
+        row = (cursor_addr - SCREEN_MEM) // 40
+        col = (cursor_addr - SCREEN_MEM) % 40
+        self.emulator.memory.write(0xD3, row)  # Cursor row
+        self.emulator.memory.write(0xD8, col)  # Cursor column
+        
+        # Update the text screen representation for display
+        self.emulator._update_text_screen()
+
     def on_key(self, event: Key) -> None:
         """Handle keyboard input and send to C64 keyboard buffer"""
         # Don't handle keys in fullscreen mode (or handle differently)
@@ -410,6 +448,24 @@ class TextualInterface(App):
         
         # Only process printable characters when emulator is running
         if not self.emulator or not self.emulator.running:
+            return
+        
+        # Handle backspace
+        if event.key == "backspace":
+            # Remove last character from keyboard buffer if not empty
+            kb_buf_base = 0x0277
+            kb_buf_len = self.emulator.memory.read(0xC6)
+            if kb_buf_len > 0:
+                # Remove last character from buffer
+                kb_buf_len -= 1
+                self.emulator.memory.write(kb_buf_base + kb_buf_len, 0)
+                self.emulator.memory.write(0xC6, kb_buf_len)
+                # Also erase from screen (backspace)
+                self._handle_backspace()
+                self.add_debug_log(f"⌨️  Backspace -> buffer len={kb_buf_len}")
+            else:
+                self.add_debug_log("⌨️  Keyboard buffer empty, ignoring backspace")
+            event.prevent_default()
             return
         
         # Check if character is printable

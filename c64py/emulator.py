@@ -217,11 +217,13 @@ class C64:
         # $0801-$0802: Link to next line ($00 $00 = end of program)
         # This is CRITICAL - if this is not $00 $00, BASIC will try to execute garbage as a program
         # The link pointer must be $00 $00 to indicate no program
+        # NOTE: This will be overwritten when a PRG file is loaded at $0801
         self.memory.ram[0x0801] = 0x00
         self.memory.ram[0x0802] = 0x00
         
         # Also ensure $0803+ is cleared to prevent garbage being interpreted as tokens
         # Clear a reasonable amount of BASIC program area
+        # NOTE: This will be overwritten when a PRG file is loaded
         for addr in range(0x0803, 0x0900):
             self.memory.ram[addr] = 0x00
         
@@ -329,17 +331,35 @@ class C64:
             self.memory.write(addr, byte_val)
         
         self.program_loaded = True
-        print(f"Loaded PRG: {len(prg_data)} bytes at ${load_addr:04X}")
+        end_addr = load_addr + len(prg_data)
+        print(f"Loaded PRG: {len(prg_data)} bytes at ${load_addr:04X}, end at ${end_addr:04X}")
         
         # If loaded at $0801 (BASIC), set up BASIC pointers
         if load_addr == 0x0801:
-            # Set BASIC start pointer
+            # Set BASIC start pointer ($2B/$2C) - points to start of program
             self.memory.ram[0x002B] = 0x01
             self.memory.ram[0x002C] = 0x08
-            # Set BASIC end pointer
-            end_addr = load_addr + len(prg_data)
+            
+            # Set BASIC end pointer ($2D/$2E) - points to end of program
+            # This should point to the address AFTER the $00 $00 end marker
             self.memory.ram[0x002D] = end_addr & 0xFF
             self.memory.ram[0x002E] = (end_addr >> 8) & 0xFF
+            
+            # Debug: Log the BASIC pointers
+            if self.interface:
+                self.interface.add_debug_log(f"📝 BASIC start: ${self.memory.ram[0x002B] | (self.memory.ram[0x002C] << 8):04X}")
+                self.interface.add_debug_log(f"📝 BASIC end: ${self.memory.ram[0x002D] | (self.memory.ram[0x002E] << 8):04X}")
+                # Check if program has proper end marker
+                if end_addr >= 2:
+                    end_marker_low = self.memory.read(end_addr - 2)
+                    end_marker_high = self.memory.read(end_addr - 1)
+                    if end_marker_low == 0x00 and end_marker_high == 0x00:
+                        self.interface.add_debug_log("✅ Program has proper $00 $00 end marker")
+                    else:
+                        self.interface.add_debug_log(f"⚠️ Program end marker: ${end_marker_low:02X} ${end_marker_high:02X} (expected $00 $00)")
+                # Show first few bytes of program
+                first_bytes = [f"${self.memory.read(0x0801 + i):02X}" for i in range(min(16, len(prg_data)))]
+                self.interface.add_debug_log(f"📝 First bytes at $0801: {', '.join(first_bytes)}")
     
     def _screen_update_worker(self) -> None:
         """Worker thread that periodically updates the screen"""
