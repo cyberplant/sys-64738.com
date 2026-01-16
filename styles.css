@@ -63,6 +63,38 @@ body.dev-page #emulator-container {
     border-bottom: 2px solid #00ff00;
 }
 
+.dev-panel-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.dev-modes {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn.btn-mode {
+    padding: 8px 12px;
+    font-size: 12px;
+    border-radius: 4px;
+    background: rgba(0, 255, 0, 0.15);
+    color: #00ff00;
+    border: 1px solid rgba(0, 255, 0, 0.55);
+}
+
+.btn.btn-mode:hover {
+    background: rgba(0, 255, 0, 0.25);
+    box-shadow: none;
+}
+
+.btn.btn-mode.is-active {
+    background: #00ff00;
+    color: #000;
+    border-color: #00ff00;
+}
+
 .dev-title {
     font-weight: bold;
     letter-spacing: 1px;
@@ -93,6 +125,18 @@ body.dev-page #emulator-container {
     flex: 1;
     min-height: 0; /* allow flex child to shrink */
     padding: 12px;
+    --editor-inset: 12px;
+    --gutter-w: 52px;
+}
+
+.editor-layer {
+    position: absolute;
+    inset: 0;
+    display: none;
+}
+
+.editor-layer.is-active {
+    display: block;
 }
 
 .basic-highlight,
@@ -106,7 +150,10 @@ body.dev-page #emulator-container {
 
 .basic-highlight {
     position: absolute;
-    inset: 12px;
+    top: var(--editor-inset);
+    right: var(--editor-inset);
+    bottom: var(--editor-inset);
+    left: calc(var(--editor-inset) + var(--gutter-w));
     margin: 0;
     padding: 12px;
     border: 1px solid rgba(0, 255, 0, 0.65);
@@ -118,7 +165,10 @@ body.dev-page #emulator-container {
 
 #basic-editor {
     position: absolute;
-    inset: 12px;
+    top: var(--editor-inset);
+    right: var(--editor-inset);
+    bottom: var(--editor-inset);
+    left: calc(var(--editor-inset) + var(--gutter-w));
     margin: 0;
     padding: 12px;
     border: 1px solid rgba(0, 255, 0, 0.65);
@@ -130,11 +180,94 @@ body.dev-page #emulator-container {
     caret-color: #00ff00;
 }
 
+.asm-highlight,
+#asm-editor {
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.4;
+    tab-size: 4;
+    white-space: pre;
+}
+
+.asm-highlight {
+    position: absolute;
+    top: var(--editor-inset);
+    right: var(--editor-inset);
+    bottom: var(--editor-inset);
+    left: calc(var(--editor-inset) + var(--gutter-w));
+    margin: 0;
+    padding: 12px;
+    border: 1px solid rgba(0, 255, 0, 0.65);
+    overflow: auto;
+    pointer-events: none;
+    color: #00ff00;
+    background: rgba(0, 0, 0, 0.2);
+}
+
+#asm-editor {
+    position: absolute;
+    top: var(--editor-inset);
+    right: var(--editor-inset);
+    bottom: var(--editor-inset);
+    left: calc(var(--editor-inset) + var(--gutter-w));
+    margin: 0;
+    padding: 12px;
+    border: 1px solid rgba(0, 255, 0, 0.65);
+    background: transparent;
+    resize: none;
+    overflow: auto;
+    outline: none;
+    color: transparent;
+    caret-color: #00ff00;
+}
+
 .dev-hint {
     padding: 10px 12px;
     border-top: 2px solid #00ff00;
     color: rgba(0, 255, 0, 0.75);
     font-size: 12px;
+}
+
+.editor-gutter {
+    position: absolute;
+    top: var(--editor-inset);
+    bottom: var(--editor-inset);
+    left: var(--editor-inset);
+    width: var(--gutter-w);
+    margin: 0;
+    padding: 12px 8px 12px 12px;
+    border: 1px solid rgba(0, 255, 0, 0.35);
+    border-right: none;
+    overflow: auto;
+    color: rgba(0, 255, 0, 0.6);
+    background: rgba(0, 0, 0, 0.2);
+    text-align: right;
+    user-select: none;
+    pointer-events: none;
+    white-space: pre;
+}
+
+.editor-gutter {
+    scrollbar-width: none;
+}
+.editor-gutter::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+}
+
+.editor-error-line {
+    position: absolute;
+    left: calc(var(--editor-inset) + var(--gutter-w));
+    right: var(--editor-inset);
+    height: calc(1.4em);
+    top: var(--editor-inset);
+    background: rgba(255, 85, 85, 0.15);
+    border: 1px solid rgba(255, 85, 85, 0.25);
+    border-left: none;
+    border-right: none;
+    pointer-events: none;
+    display: none;
+    z-index: 1;
 }
 
 /* BASIC highlight colors */
@@ -143,6 +276,14 @@ body.dev-page #emulator-container {
 .bas-str { color: #ff66ff; }
 .bas-com { color: rgba(0, 255, 0, 0.45); }
 .bas-num { color: #ffffff; }
+
+/* ASM highlight colors */
+.asm-lbl { color: #ffaa00; }
+.asm-op { color: #33ccff; font-weight: bold; }
+.asm-dir { color: #33ccff; font-weight: bold; }
+.asm-str { color: #ff66ff; }
+.asm-com { color: rgba(0, 255, 0, 0.45); }
+.asm-num { color: #ffffff; }
 
 @media (max-width: 980px) {
     body.dev-page {

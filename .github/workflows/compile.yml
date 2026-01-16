@@ -38,24 +38,21 @@ jobs:
       - name: Install VICE (petcat)
         run: |
           sudo apt-get update
-          sudo apt-get install -y vice
-      
-      - name: Compile BASIC to PRG
-        run: |
-          chmod +x compile.sh
-          ./compile.sh
+          sudo apt-get install -y vice acme
 
       - name: Stamp build info (sha + cache-busting)
         run: |
           set -euo pipefail
           SHA="$(git rev-parse --short HEAD)"
           DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          REF_NAME="${GITHUB_REF_NAME}"
 
           # Write build info for in-page display.
           cat > build-info.json <<EOF
           {
             "sha": "${SHA}",
-            "date": "${DATE}"
+            "date": "${DATE}",
+            "refName": "${REF_NAME}"
           }
           EOF
 
@@ -68,6 +65,16 @@ jobs:
 
           sed -i "s/__SYS64738_BUILD_SHA__/${SHA}/g" build-info.json
           sed -i "s/__SYS64738_BUILD_DATE__/${DATE}/g" build-info.json
+
+      - name: Compile sources to PRG (and build D64)
+        env:
+          SYS64738_BUILD_SHA: ${{ github.sha }}
+          SYS64738_REF_NAME: ${{ github.ref_name }}
+        run: |
+          chmod +x compile.sh
+          # Use short SHA for filenames (compile.sh also sanitizes, this is just convenience)
+          export SYS64738_BUILD_SHA="${SYS64738_BUILD_SHA:0:7}"
+          ./compile.sh
       
       - name: List compiled files
         run: |
