@@ -6,9 +6,9 @@ A Commodore 64 emulator focused on text mode operation.
 Can load and run PRG files, dump memory, and communicate via TCP/UDP.
 
 Usage:
-    python emulators/C64.py [program.prg]
-    python emulators/C64.py --tcp-port 1234
-    python emulators/C64.py program.prg --udp-port 1235
+    python C64.py [program.prg]
+    python C64.py --tcp-port 1234
+    python C64.py program.prg --udp-port 1235
 """
 
 from __future__ import annotations
