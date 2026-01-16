@@ -13,6 +13,8 @@ from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static, Header, Footer, RichLog
 
+from .constants import SCREEN_MEM
+
 if TYPE_CHECKING:
     from .emulator import C64
 
