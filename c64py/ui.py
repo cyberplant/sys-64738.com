@@ -131,7 +131,6 @@ class TextualInterface(App):
             max_cycles = self.max_cycles
             last_pc = None
             stuck_count = 0
-            consecutive_cr_count = 0  # Track consecutive CR calls
 
             while self.emulator.running:
                 if cycles >= max_cycles:
@@ -160,16 +159,6 @@ class TextualInterface(App):
                 else:
                     stuck_count = 0
                 last_pc = pc
-
-                # Detect excessive consecutive CR calls (potential infinite loop)
-                if hasattr(self.emulator.cpu, 'last_chrout_char') and self.emulator.cpu.last_chrout_char == 0x0D:
-                    self.consecutive_cr_count += 1
-                    if self.consecutive_cr_count > 5000:  # Allow some CRs but not infinite
-                        self.add_debug_log(f"⚠️ Detected {self.consecutive_cr_count} consecutive CR calls - possible infinite loop, stopping")
-                        #self.emulator.running = False
-                        #break
-                else:
-                    self.consecutive_cr_count = 0
 
                 # Simple stuck detection
                 #if cycles % 10000 == 0:
@@ -352,6 +341,60 @@ class TextualInterface(App):
             # Default: return as-is (may need more mapping)
             return ascii_code & 0xFF
 
+    def _echo_character(self, petscii_code: int) -> None:
+        """Echo a character to the screen at current cursor position"""
+        if not self.emulator:
+            return
+        
+        # Get cursor position from zero-page
+        cursor_low = self.emulator.memory.read(0xD1)
+        cursor_high = self.emulator.memory.read(0xD2)
+        cursor_addr = cursor_low | (cursor_high << 8)
+        
+        # If cursor is invalid, start at screen base
+        if cursor_addr < SCREEN_MEM or cursor_addr >= SCREEN_MEM + 1000:
+            cursor_addr = SCREEN_MEM
+        
+        # Handle special characters
+        if petscii_code == 0x0D:  # Carriage return
+            # Move to next line, scroll if at bottom
+            row = (cursor_addr - SCREEN_MEM) // 40
+            if row < 24:
+                # Just move to next row
+                cursor_addr = SCREEN_MEM + (row + 1) * 40
+            else:
+                # At bottom row, scroll screen up
+                self.emulator.memory._scroll_screen_up()
+                # Cursor stays at bottom row (24) after scroll
+                cursor_addr = SCREEN_MEM + 24 * 40
+        elif petscii_code == 0x0A:  # Line feed - ignore (C64 screen editor ignores it)
+            return  # Don't echo LF
+        elif petscii_code == 0x93:  # Clear screen
+            for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
+                self.emulator.memory.write(addr, 0x20)  # Space
+            cursor_addr = SCREEN_MEM
+        else:
+            # Write character to screen
+            if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
+                self.emulator.memory.write(cursor_addr, petscii_code)
+                cursor_addr += 1
+                # Simple wrapping
+                if cursor_addr >= SCREEN_MEM + 1000:
+                    cursor_addr = SCREEN_MEM
+        
+        # Update cursor position
+        self.emulator.memory.write(0xD1, cursor_addr & 0xFF)
+        self.emulator.memory.write(0xD2, (cursor_addr >> 8) & 0xFF)
+        
+        # Also update row and column variables
+        row = (cursor_addr - SCREEN_MEM) // 40
+        col = (cursor_addr - SCREEN_MEM) % 40
+        self.emulator.memory.write(0xD3, row)  # Cursor row
+        self.emulator.memory.write(0xD8, col)  # Cursor column
+        
+        # Update the text screen representation for display
+        self.emulator._update_text_screen()
+
     def on_key(self, event: Key) -> None:
         """Handle keyboard input and send to C64 keyboard buffer"""
         # Don't handle keys in fullscreen mode (or handle differently)
@@ -390,6 +433,8 @@ class TextualInterface(App):
                 self.emulator.memory.write(kb_buf_base + kb_buf_len, petscii_code)
                 kb_buf_len += 1
                 self.emulator.memory.write(0xC6, kb_buf_len)
+                # Echo character to screen
+                self._echo_character(petscii_code)
                 self.add_debug_log(f"⌨️  Key pressed: '{char}' (PETSCII ${petscii_code:02X}) -> buffer len={kb_buf_len}")
             else:
                 self.add_debug_log("⌨️  Keyboard buffer full, ignoring key")
@@ -401,6 +446,8 @@ class TextualInterface(App):
                 self.emulator.memory.write(kb_buf_base + kb_buf_len, 0x0D)  # CR
                 kb_buf_len += 1
                 self.emulator.memory.write(0xC6, kb_buf_len)
+                # Echo CR to screen (newline)
+                self._echo_character(0x0D)
                 self.add_debug_log(f"⌨️  Enter pressed (CR) -> buffer len={kb_buf_len}")
             else:
                 self.add_debug_log("⌨️  Keyboard buffer full, ignoring Enter")

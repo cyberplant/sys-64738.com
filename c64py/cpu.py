@@ -253,9 +253,6 @@ class CPU6502:
                     # Cursor stays at bottom row (24) after scroll
                     cursor_addr = SCREEN_MEM + 24 * 40
 
-                # Reset consecutive CR counter on successful CR
-                if hasattr(self, 'interface') and self.interface:
-                    self.interface.consecutive_cr_count = 0
             elif char == 0x0A:  # Line feed (LF) - in PETSCII this is 'J', but C64 screen editor ignores it
                 # C64 screen editor ignores 0x0A - it has no effect on cursor positioning
                 # In PETSCII, 0x0A would display as 'J' if written, but the real C64 ignores it
