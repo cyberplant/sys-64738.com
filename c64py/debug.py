@@ -20,7 +20,7 @@ class UdpDebugLogger:
         self.host = host
         self.sock = None
         self.enabled = False
-        self.queue = queue.Queue(maxsize=100000)  # Buffer up to 100k events (increased for 100% logging)
+        self.queue = queue.Queue(maxsize=1000000)  # Buffer up to 100k events (increased for 100% logging)
         self.worker_thread = None
         self.running = False
         

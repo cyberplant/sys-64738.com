@@ -160,11 +160,6 @@ class TextualInterface(App):
                     stuck_count = 0
                 last_pc = pc
 
-                # Simple stuck detection
-                #if cycles % 10000 == 0:
-                    #if hasattr(self.emulator, 'interface') and self.emulator.interface:
-                        #self.emulator.interface.add_debug_log(f"🔄 Emulator progress: {cycles} cycles")
-
             # Log why we stopped
             if hasattr(self, 'add_debug_log'):
                 if max_cycles is not None and cycles >= max_cycles:
