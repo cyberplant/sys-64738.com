@@ -12,25 +12,48 @@
     <aside class="dev-panel">
         <div class="dev-panel-header">
             <div>
-                <div class="dev-title">BASIC DEV</div>
+                <div class="dev-title">DEV</div>
                 <div class="dev-meta">Build: <span id="build-sha">__SYS64738_BUILD_SHA__</span></div>
             </div>
+            <div class="dev-panel-actions">
+                <div class="dev-modes" role="tablist" aria-label="Language mode">
+                    <button type="button" id="mode-basic" class="btn btn-mode is-active" role="tab" aria-selected="true">BASIC</button>
+                    <button type="button" id="mode-asm" class="btn btn-mode" role="tab" aria-selected="false">ASM</button>
+                </div>
             <button id="run-btn" class="btn">RUN</button>
+            </div>
         </div>
         <div class="dev-status" id="dev-status">Ready.</div>
 
         <div class="editor-wrap">
-            <pre id="basic-highlight" class="basic-highlight" aria-hidden="true"></pre>
-            <textarea id="basic-editor"
-                spellcheck="false"
-                autocomplete="off"
-                autocapitalize="off"
-                autocorrect="off"
-                wrap="off"
-            ></textarea>
+            <div class="editor-layer is-active" data-mode="basic">
+                <div class="editor-error-line" id="basic-error-line" aria-hidden="true"></div>
+                <pre id="basic-gutter" class="editor-gutter" aria-hidden="true"></pre>
+                <pre id="basic-highlight" class="basic-highlight" aria-hidden="true"></pre>
+                <textarea id="basic-editor"
+                    spellcheck="false"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    wrap="off"
+                ></textarea>
+            </div>
+
+            <div class="editor-layer" data-mode="asm">
+                <div class="editor-error-line" id="asm-error-line" aria-hidden="true"></div>
+                <pre id="asm-gutter" class="editor-gutter" aria-hidden="true"></pre>
+                <pre id="asm-highlight" class="asm-highlight" aria-hidden="true"></pre>
+                <textarea id="asm-editor"
+                    spellcheck="false"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    wrap="off"
+                ></textarea>
+            </div>
         </div>
 
-        <div class="dev-hint">
+        <div class="dev-hint" id="dev-hint">
             Type C64 BASIC (with or without line numbers) and click RUN to compile to a tokenized PRG and load it into the emulator.
         </div>
     </aside>

@@ -1,86 +1,159 @@
 #!/bin/bash
-# C64 BASIC to PRG Compiler
-# Uses petcat from VICE emulator suite
+# C64 source to PRG compiler
+# - BASIC (*.bas): petcat (VICE)
+# - ASM (*.asm):  acme
 
 set -e
 
 SRC_DIR="src"
 OUTPUT_DIR="programs"
-SCRIPT_NAME="main.bas"
-OUTPUT_NAME="main.prg"
-
-echo "🔧 Compiling C64 BASIC program..."
-
-# Check if petcat is available
-if ! command -v petcat &> /dev/null; then
-    echo "❌ Error: petcat not found. Installing VICE..."
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        sudo apt-get update
-        sudo apt-get install -y vice
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        if command -v brew &> /dev/null; then
-            brew install vice
-        else
-            echo "❌ Error: Homebrew not found. Please install VICE manually."
-            exit 1
-        fi
-    else
-        echo "❌ Error: Unsupported OS. Please install VICE manually."
-        exit 1
-    fi
-fi
+echo "🔧 Compiling C64 sources in ./${SRC_DIR} -> ./${OUTPUT_DIR} ..."
 
 # Create output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
 
-# Check if source file exists
-if [ ! -f "$SRC_DIR/$SCRIPT_NAME" ]; then
-    echo "❌ Error: Source file $SRC_DIR/$SCRIPT_NAME not found!"
+shopt -s nullglob
+
+bas_files=("$SRC_DIR"/*.bas)
+asm_files=("$SRC_DIR"/*.asm)
+
+if [ ${#bas_files[@]} -eq 0 ] && [ ${#asm_files[@]} -eq 0 ]; then
+    echo "❌ Error: No .bas or .asm files found in ./${SRC_DIR}/"
     exit 1
 fi
 
-# Convert line endings to Unix format (LF) if needed
-# This ensures petcat can read the file correctly
-if [[ "$OSTYPE" == "darwin"* ]] || [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    # Ensure file has Unix line endings
-    sed -i.bak 's/\r$//' "$SRC_DIR/$SCRIPT_NAME" 2>/dev/null || true
-    rm -f "$SRC_DIR/$SCRIPT_NAME.bak" 2>/dev/null || true
-fi
-
-# Compile BASIC to PRG
-# -w2: write as C64 BASIC 2.0 format (tokenized)
-# -h: write header (load address)
-# -o: output file
-# --: separator between options and input file (required by petcat)
-echo "📝 Converting $SRC_DIR/$SCRIPT_NAME to $OUTPUT_DIR/$OUTPUT_NAME..."
-petcat -w2 -h -o "$OUTPUT_DIR/$OUTPUT_NAME" -- "$SRC_DIR/$SCRIPT_NAME"
-
-if [ $? -ne 0 ]; then
-    echo "❌ Compilation failed!"
-    exit 1
-fi
-
-# Verify the output file
-if [ -f "$OUTPUT_DIR/$OUTPUT_NAME" ]; then
-    echo "📊 PRG file info:"
-    hexdump -C "$OUTPUT_DIR/$OUTPUT_NAME" | head -10
-    petcat -2 -- $OUTPUT_DIR/$OUTPUT_NAME
-    echo ""
-    
-    # Check load address (little-endian: first byte is low, second is high)
-    BYTE1=$(hexdump -n 1 -e '1/1 "%02x"' "$OUTPUT_DIR/$OUTPUT_NAME")
-    BYTE2=$(hexdump -n 2 -e '1/1 "%02x" "\n"' "$OUTPUT_DIR/$OUTPUT_NAME" | tail -1)
-    LOAD_ADDR="${BYTE2}${BYTE1}"
-    if [ "$LOAD_ADDR" = "0801" ]; then
-        echo "✅ Load address is correct: \$0801"
-    else
-        echo "⚠️  Warning: Load address is \$$LOAD_ADDR (expected 0801)"
+# Install needed tools only when required by source files present.
+if [ ${#bas_files[@]} -gt 0 ]; then
+    if ! command -v petcat &> /dev/null; then
+        echo "❌ Error: petcat not found. Installing VICE..."
+        if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            sudo apt-get update
+            sudo apt-get install -y vice
+        elif [[ "$OSTYPE" == "darwin"* ]]; then
+            if command -v brew &> /dev/null; then
+                brew install vice
+            else
+                echo "❌ Error: Homebrew not found. Please install VICE manually."
+                exit 1
+            fi
+        else
+            echo "❌ Error: Unsupported OS. Please install VICE manually."
+            exit 1
+        fi
     fi
-    
-    echo "✅ Successfully compiled $OUTPUT_DIR/$OUTPUT_NAME"
-    ls -lh "$OUTPUT_DIR/$OUTPUT_NAME"
-else
-    echo "❌ Error: PRG file was not created!"
-    exit 1
 fi
+
+if [ ${#asm_files[@]} -gt 0 ]; then
+    if ! command -v acme &> /dev/null; then
+        echo "❌ Error: acme not found. Installing acme..."
+        if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            sudo apt-get update
+            sudo apt-get install -y acme
+        elif [[ "$OSTYPE" == "darwin"* ]]; then
+            if command -v brew &> /dev/null; then
+                brew install acme
+            else
+                echo "❌ Error: Homebrew not found. Please install acme manually."
+                exit 1
+            fi
+        else
+            echo "❌ Error: Unsupported OS. Please install acme manually."
+            exit 1
+        fi
+    fi
+fi
+
+normalize_line_endings() {
+    local file="$1"
+    # Ensure file has Unix line endings (petcat/acme prefer LF)
+    if [[ "$OSTYPE" == "darwin"* ]] || [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        sed -i.bak 's/\r$//' "$file" 2>/dev/null || true
+        rm -f "${file}.bak" 2>/dev/null || true
+    fi
+}
+
+compile_basic() {
+    local in="$1"
+    local base
+    base="$(basename "$in" .bas)"
+    local out="$OUTPUT_DIR/${base}.prg"
+    echo "📝 BASIC: $in -> $out"
+    normalize_line_endings "$in"
+    # -w2: C64 BASIC 2.0 tokenized
+    # -h:  write PRG header (load address)
+    petcat -w2 -h -o "$out" -- "$in"
+}
+
+compile_asm() {
+    local in="$1"
+    local base
+    base="$(basename "$in" .asm)"
+    local out="$OUTPUT_DIR/${base}.prg"
+    echo "📝 ASM:   $in -> $out"
+    normalize_line_endings "$in"
+    # -f cbm: write C64 PRG (load address header)
+    acme -f cbm -o "$out" "$in"
+}
+
+for f in "${bas_files[@]}"; do
+    compile_basic "$f"
+done
+
+for f in "${asm_files[@]}"; do
+    compile_asm "$f"
+done
+
+# Build a single D64 with all compiled PRGs (optional but useful for browsing/loading)
+prg_files=("$OUTPUT_DIR"/*.prg)
+if [ ${#prg_files[@]} -gt 0 ]; then
+    # Ensure c1541 is available (VICE). This may not be installed if we only compiled ASM.
+    if ! command -v c1541 &> /dev/null; then
+        echo "❌ Error: c1541 not found. Installing VICE..."
+        if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            sudo apt-get update
+            sudo apt-get install -y vice
+        elif [[ "$OSTYPE" == "darwin"* ]]; then
+            if command -v brew &> /dev/null; then
+                brew install vice
+            else
+                echo "❌ Error: Homebrew not found. Please install VICE manually."
+                exit 1
+            fi
+        else
+            echo "❌ Error: Unsupported OS. Please install VICE manually."
+            exit 1
+        fi
+    fi
+
+    # D64 name:
+    # - main branch: fixed programs.d64
+    # - other branches/PRs: programs-<sha>.d64 to avoid caching issues
+    D64_NAME="programs.d64"
+    if [[ -n "${SYS64738_REF_NAME:-}" && "${SYS64738_REF_NAME}" != "main" ]]; then
+        if [[ -n "${SYS64738_BUILD_SHA:-}" ]]; then
+            # Defensive: keep only hex chars, and use short sha (7).
+            SAFE_SHA="$(printf '%s' "${SYS64738_BUILD_SHA}" | tr -cd '0-9a-fA-F' | cut -c1-7)"
+            if [[ -n "${SAFE_SHA}" ]]; then
+                D64_NAME="programs-${SAFE_SHA}.d64"
+            fi
+        fi
+    fi
+
+    D64_PATH="$OUTPUT_DIR/${D64_NAME}"
+    echo "💾 Building D64 image: $D64_PATH"
+    rm -f "$D64_PATH"
+
+    # Create disk and then add all PRGs (stable order)
+    c1541 -format "PROGRAMS,00" d64 "$D64_PATH" >/dev/null
+    mapfile -t prg_sorted < <(printf '%s\n' "${prg_files[@]}" | LC_ALL=C sort)
+    for f in "${prg_sorted[@]}"; do
+        base="$(basename "$f")"
+        echo "  + $base"
+        c1541 -attach "$D64_PATH" -write "$f" >/dev/null
+    done
+fi
+
+echo ""
+echo "✅ Compilation finished. Outputs:"
+ls -lh "$OUTPUT_DIR"/*.prg "$OUTPUT_DIR"/*.d64 2>/dev/null || true
 
