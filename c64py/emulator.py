@@ -42,15 +42,15 @@ class C64:
 
         # Backward compatibility
         self.rich_interface = self.interface
-        
+
     def load_roms(self, rom_dir: str) -> None:
         """Load C64 ROM files
-        
+
         Args:
             rom_dir: Absolute path to directory containing ROM files
         """
         import os
-        
+
         # Load BASIC ROM
         basic_path = os.path.join(rom_dir, "basic.901226-01.bin")
         if not os.path.exists(basic_path):
@@ -66,7 +66,7 @@ class C64:
             self.memory.basic_rom = f.read()
             if self.rich_interface:
                 self.rich_interface.add_debug_log(f"💾 Loaded BASIC ROM: {len(self.memory.basic_rom)} bytes")
-        
+
         # Load KERNAL ROM
         kernal_path = os.path.join(rom_dir, "kernal.901227-03.bin")
         if not os.path.exists(kernal_path):
@@ -91,7 +91,7 @@ class C64:
             self.memory.ram[0xFFFD] = reset_high
             if self.rich_interface:
                 self.rich_interface.add_debug_log(f"🔄 Reset vector: ${reset_high:02X}{reset_low:02X}")
-        
+
         # Load Character ROM
         char_path = os.path.join(rom_dir, "characters.901225-01.bin")
         if not os.path.exists(char_path):
@@ -107,17 +107,17 @@ class C64:
             self.memory.char_rom = f.read()
             if self.rich_interface:
                 self.rich_interface.add_debug_log(f"💾 Loaded Character ROM: {len(self.memory.char_rom)} bytes")
-        
+
         # Initialize C64 state (sets memory config $01 = 0x37)
         self._initialize_c64()
-        
+
         # Set CPU PC from reset vector (after ROMs are loaded and memory is initialized)
         # Use _read_word to ensure we read from KERNAL ROM correctly
         reset_addr = self.cpu._read_word(0xFFFC)
         self.cpu.state.pc = reset_addr
         if self.rich_interface:
             self.rich_interface.add_debug_log(f"🔄 CPU reset vector: ${reset_addr:04X}")
-    
+
     def _initialize_c64(self) -> None:
         """Initialize C64 to a known state"""
         # Initialize RAM with C64-like pattern (real C64 DRAM has pattern: half $00, half $FF in 64-byte blocks)
@@ -126,7 +126,7 @@ class C64:
         for addr in range(0x0002, 0x0400):
             # RAMTAS zeros this area
             self.memory.ram[addr] = 0x00
-        
+
         # Initialize rest of RAM with pattern (real C64 DRAM characteristic)
         # Pattern: 64 bytes of $00, then 64 bytes of $FF, repeating
         for addr in range(0x0400, 0x10000):
@@ -138,25 +138,25 @@ class C64:
                     self.memory.ram[addr] = 0x00
                 else:
                     self.memory.ram[addr] = 0xFF
-        
+
         # Write to $0000 during reset (as JSC64 does)
         # This is part of the 6510 processor port initialization
         self.memory.ram[0x00] = 0x2F
-        
+
         # Memory configuration register ($01)
         # Bits 0-2: Memory configuration
         # 0x37 = %00110111 = BASIC ROM + KERNAL ROM + I/O enabled
         self.memory.ram[0x01] = 0x37
-        
+
         # Initialize screen memory with spaces (don't pre-fill - let KERNAL/BASIC do it)
         # The C64 typically clears screen during initialization
         for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
             self.memory.ram[addr] = 0x20  # Space character
-        
+
         # Initialize color memory (default: light blue = 14, but we'll use white = 1)
         for addr in range(COLOR_MEM, COLOR_MEM + 1000):
             self.memory.ram[addr] = 1  # White
-        
+
         # Initialize VIC registers (simplified)
         # VIC register $D018: Screen and character memory
         # Bit 1-3: Screen memory (default $0400 = %000 = 0)
@@ -164,20 +164,20 @@ class C64:
         # So $D018 = %00010000 = $10
         if hasattr(self.memory, '_vic_regs'):
             self.memory._vic_regs[0x18] = 0x10  # Screen at $0400, chars at $1000
-        
+
         # Initialize stack pointer
         self.cpu.state.sp = 0xFF
-        
+
         # Initialize zero-page variables used by KERNAL
         # $C3-$C4: Temporary pointer used by vector copy routine
         # Typically initialized to point to RAM vector area (0x0314)
         self.memory.ram[0xC3] = 0x14  # Temporary pointer (low)
         self.memory.ram[0xC4] = 0x03  # Temporary pointer (high) - points to $0314
-        
+
         # Initialize some zero-page variables
         self.memory.ram[0x0288] = 0x0E  # Cursor color (light blue)
         self.memory.ram[0x0286] = 0x0E  # Background color (light blue)
-        
+
         # Initialize cursor position (points to screen start)
         # $D1/$D2 store the cursor address (low/high bytes)
         self.memory.ram[0xD1] = SCREEN_MEM & 0xFF  # Cursor address low byte
@@ -185,14 +185,14 @@ class C64:
         # Also initialize cursor row/col variables
         self.memory.ram[0xD3] = 0  # Cursor row (0-24)
         self.memory.ram[0xD8] = 0  # Cursor column (0-39)
-        
+
         # Initialize KERNAL reset vector at $8000-$8001 to point to BASIC cold start
         # The KERNAL does JMP ($8000) to jump to BASIC after initialization
         # BASIC cold start is typically at $A483 (standard C64 BASIC entry point)
         basic_cold_start = 0xA483
         self.memory.ram[0x8000] = basic_cold_start & 0xFF
         self.memory.ram[0x8001] = (basic_cold_start >> 8) & 0xFF
-        
+
         # Initialize BASIC pointers for empty program
         basic_start = 0x0801
         # $2B/$2C: Start of BASIC program (VARPTR)
@@ -213,7 +213,7 @@ class C64:
         memtop = 0x9FFF  # Default top of BASIC RAM
         self.memory.ram[0x0033] = memtop & 0xFF
         self.memory.ram[0x0034] = (memtop >> 8) & 0xFF
-        
+
         # Mark end of BASIC program (empty program marker)
         # $0801-$0802: Link to next line ($00 $00 = end of program)
         # This is CRITICAL - if this is not $00 $00, BASIC will try to execute garbage as a program
@@ -221,25 +221,25 @@ class C64:
         # NOTE: This will be overwritten when a PRG file is loaded at $0801
         self.memory.ram[0x0801] = 0x00
         self.memory.ram[0x0802] = 0x00
-        
+
         # Also ensure $0803+ is cleared to prevent garbage being interpreted as tokens
         # Clear a reasonable amount of BASIC program area
         # NOTE: This will be overwritten when a PRG file is loaded
         for addr in range(0x0803, 0x0900):
             self.memory.ram[addr] = 0x00
-        
+
         # Initialize current line number for direct mode
         # $39/$3A: Current line number (low/high)
         # $3A = $FF means direct mode (no line number)
         self.memory.ram[0x0039] = 0x00  # Low byte
         self.memory.ram[0x003A] = 0xFF  # High byte = $FF means direct mode
-        
+
         # Initialize keyboard buffer (for GETIN)
         self.memory.ram[0xC6] = 0  # Number of characters in keyboard buffer
         # Clear keyboard buffer area ($0277-$0280)
         for i in range(10):
             self.memory.ram[0x0277 + i] = 0
-        
+
         # Initialize BASIC input buffer (for CHRIN keyboard input)
         # $0200-$0258: BASIC input buffer (89 bytes)
         # $029B: Input buffer read pointer (0 = empty, >0 = chars available)
@@ -249,12 +249,12 @@ class C64:
         # Clear BASIC input buffer
         for i in range(89):
             self.memory.ram[0x0200 + i] = 0
-        
+
         # Initialize zero-page status register $6C (used by KERNAL error handler)
         # This is typically initialized to 0 on boot
         # The KERNAL checks this at $FE6E with SBC $6C - if result is 0, it halts
         self.memory.ram[0x6C] = 0  # Status register (typically 0 = no error)
-        
+
         # Initialize KERNAL vectors to defaults
         # These are copied from KERNAL ROM during RESTOR routine
         # We initialize them here to prevent crashes during boot
@@ -294,7 +294,7 @@ class C64:
         for addr, value in kernal_vectors.items():
             self.memory.ram[addr] = value & 0xFF
             self.memory.ram[addr + 1] = (value >> 8) & 0xFF
-        
+
         # Initialize CIA1 timers (typical C64 boot values)
         # Timer A is used for jiffy clock (exactly 60Hz)
         # PAL C64: ~1.022727 MHz CPU, so 60Hz = 17045.45 cycles
@@ -313,41 +313,41 @@ class C64:
         # Timer B can be used for other purposes
         self.memory.cia1_timer_b.latch = 0xFFFF
         self.memory.cia1_timer_b.counter = 0xFFFF
-        
+
         if self.rich_interface:
             self.rich_interface.add_debug_log("🎮 C64 initialized")
-    
+
     def load_prg(self, prg_path: str) -> None:
         """Load a PRG file into memory"""
         with open(prg_path, "rb") as f:
             data = f.read()
-        
+
         if len(data) < 2:
             raise ValueError("PRG file too small")
-        
+
         load_addr = data[0] | (data[1] << 8)
         prg_data = data[2:]
-        
+
         # Write PRG data to memory
         for i, byte_val in enumerate(prg_data):
             addr = (load_addr + i) & 0xFFFF
             self.memory.write(addr, byte_val)
-        
+
         self.program_loaded = True
         end_addr = load_addr + len(prg_data)
         print(f"Loaded PRG: {len(prg_data)} bytes at ${load_addr:04X}, end at ${end_addr:04X}")
-        
+
         # If loaded at $0801 (BASIC), set up BASIC pointers
         if load_addr == 0x0801:
             # Set BASIC start pointer ($2B/$2C) - points to start of program
             self.memory.ram[0x002B] = 0x01
             self.memory.ram[0x002C] = 0x08
-            
+
             # Set BASIC end pointer ($2D/$2E) - points to end of program
             # This should point to the address AFTER the $00 $00 end marker
             self.memory.ram[0x002D] = end_addr & 0xFF
             self.memory.ram[0x002E] = (end_addr >> 8) & 0xFF
-            
+
             # Debug: Log the BASIC pointers
             if self.interface:
                 self.interface.add_debug_log(f"📝 BASIC start: ${self.memory.ram[0x002B] | (self.memory.ram[0x002C] << 8):04X}")
@@ -363,7 +363,7 @@ class C64:
                 # Show first few bytes of program
                 first_bytes = [f"${self.memory.read(0x0801 + i):02X}" for i in range(min(16, len(prg_data)))]
                 self.interface.add_debug_log(f"📝 First bytes at $0801: {', '.join(first_bytes)}")
-    
+
     def _screen_update_worker(self) -> None:
         """Worker thread that periodically updates the screen"""
         update_count = 0
@@ -412,7 +412,7 @@ class C64:
                     self.interface.add_debug_log(error_msg)
                 else:
                     print(error_msg)
-    
+
     def run(self, max_cycles: Optional[int] = None) -> None:
         """Run the emulator"""
         self.running = True
@@ -420,11 +420,11 @@ class C64:
         last_pc = None
         stuck_count = 0
         pc_history = []  # Track recent PCs for debugging
-        
+
         # Start screen update thread
         self.screen_update_thread = threading.Thread(target=self._screen_update_worker, daemon=True)
         self.screen_update_thread.start()
-        
+
         # Log start of execution
         if self.udp_debug and self.udp_debug.enabled:
             self.udp_debug.send('execution_start', {
@@ -432,7 +432,7 @@ class C64:
                 'initial_pc': self.cpu.state.pc,
                 'initial_pc_hex': f'${self.cpu.state.pc:04X}'
             })
-        
+
         # Main CPU emulation loop (runs as fast as possible)
         last_time = time.time()
         last_cycle_check = 0
@@ -470,7 +470,7 @@ class C64:
                 break
 
             # Textual interface updates automatically, no manual updates needed
-            
+
             # Calculate cycles per second periodically
             if cycles - last_cycle_check >= 100000:
                 current_time = time.time()
@@ -479,7 +479,7 @@ class C64:
                     self.cycles_per_second = (cycles - last_cycle_check) / elapsed
                 last_time = current_time
                 last_cycle_check = cycles
-            
+
             # Detect if we're stuck (but ignore if CPU is stopped - that's expected)
             if self.cpu.state.stopped:
                 # CPU is stopped (KIL instruction) - this is expected, just break
@@ -514,14 +514,14 @@ class C64:
             pc_history.append(self.cpu.state.pc)
             if len(pc_history) > 20:  # Keep last 20 PCs
                 pc_history.pop(0)
-            
+
             # Periodic status logging (less frequent to avoid overhead)
             if self.debug and cycles % 100000 == 0:
                 state = self.get_cpu_state()
                 debug_msg = f"🔄 Cycles: {cycles}, PC=${state['pc']:04X}, A=${state['a']:02X}"
                 if self.rich_interface:
                     self.rich_interface.add_debug_log(debug_msg)
-            
+
             # Log periodic status if UDP debug is enabled (less frequent)
             if self.udp_debug and self.udp_debug.enabled and cycles % 100000 == 0:
                 state = self.get_cpu_state()
@@ -635,7 +635,7 @@ class C64:
                         print(f"   ✅ Called from boot sequence (FCFB)")
                     else:
                         print(f"   ❓ Called from unexpected address \\${return_addr:04X}")
-        
+
         # Determine stop reason
         stop_reason = "unknown"
         if self.cpu.state.stopped:
@@ -656,10 +656,10 @@ class C64:
                 'max_cycles': max_cycles,
                 'running': self.running
             })
-        
+
         # Final screen update
         self._update_text_screen()
-    
+
     def _petscii_to_screen_code(self, petscii_char: int) -> int:
         """Convert PETSCII character to C64 screen code"""
         if petscii_char < 32:
@@ -735,7 +735,7 @@ class C64:
 
                     self.text_screen[row][col] = char
                     self.text_colors[row][col] = color_code
-    
+
     def render_text_screen(self, no_colors: bool = False) -> str:
         """Render text screen as simple white text on blue background"""
         # Simple rendering: white text on blue background
@@ -901,11 +901,11 @@ class C64:
 
                 lines.append(''.join(line))
             return '\n'.join(lines)
-    
+
     def dump_memory(self, start: int = 0x0000, end: int = 0x10000) -> bytes:
         """Dump memory range as bytes"""
         return bytes(self.memory.ram[start:end])
-    
+
     def get_cpu_state(self) -> Dict:
         """Get current CPU state"""
         return {
@@ -917,7 +917,7 @@ class C64:
             'p': self.cpu.state.p,
             'cycles': self.cpu.state.cycles
         }
-    
+
     def set_cpu_state(self, state: Dict) -> None:
         """Set CPU state"""
         if 'pc' in state:

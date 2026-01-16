@@ -27,7 +27,7 @@ class CIATimer:
     irq_enabled: bool = False  # Is IRQ enabled for this timer?
     one_shot: bool = False  # One-shot mode (vs continuous)
     input_mode: int = 0  # Input mode (0=processor clock)
-    
+
     def update(self, cycles: int) -> bool:
         """Update timer, return True if IRQ should be triggered"""
         if not self.running:
@@ -48,7 +48,7 @@ class CIATimer:
                 if self.one_shot:
                     self.running = False
         return False
-    
+
     def reset(self) -> None:
         """Reset timer to latch value"""
         self.counter = self.latch

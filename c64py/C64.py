@@ -36,7 +36,7 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     # Default ROM directory is relative to script location
     default_rom_dir = os.path.join(os.path.dirname(script_dir), "lib", "assets")
-    
+
     ap = argparse.ArgumentParser(description="C64 Emulator (text mode)")
     ap.add_argument("prg_file", nargs="?", help="PRG file to load and run")
     ap.add_argument("--rom-dir", default=default_rom_dir, help="Directory containing ROM files")
@@ -164,7 +164,7 @@ def main():
         emu.running = False
         if server:
             server.running = False
-    
+
     # Dump memory if requested
     if args.dump_memory:
         memory_dump = emu.dump_memory()
@@ -172,7 +172,7 @@ def main():
             f.write(bytes([0x00, 0x00]))  # PRG header
             f.write(memory_dump)
         print(f"Memory dumped to {args.dump_memory}")
-    
+
     # Show final screen (only if Rich was not used)
     if not server or not server.running:
         if args.no_colors:
@@ -180,7 +180,7 @@ def main():
             emu._update_text_screen()
             print("\nFinal Screen output:")
             print(emu.render_text_screen(no_colors=True))
-    
+
     # Textual interface handles its own cleanup
 
     # Stop screen update thread

@@ -102,10 +102,10 @@ class TextualInterface(App):
         if self.fullscreen:
             # In fullscreen mode, add the fullscreen class to the screen
             self.screen.add_class("fullscreen")
-        
+
         self.c64_display = self.query_one("#c64-display", RichLog)
         self.c64_display.write("Loading C64...")
-        
+
         if not self.fullscreen:
             self.debug_logs = self.query_one("#debug-panel", RichLog)
             self.status_bar = self.query_one("#status-bar", Static)
@@ -209,7 +209,7 @@ class TextualInterface(App):
 
             # Update screen display
             screen_content = self.emulator.render_text_screen(no_colors=False)
-            
+
             # Debug: Check if screen has any non-space content
             non_space_count = sum(1 for c in screen_content if c not in (' ', '\n'))
             if non_space_count > 0 and not hasattr(self, '_screen_debug_logged'):
@@ -220,7 +220,7 @@ class TextualInterface(App):
                     sample_chars.append(f"${char_code:02X}")
                 self.add_debug_log(f"📺 Screen has {non_space_count} non-space chars. First 20 bytes: {', '.join(sample_chars)}")
                 self._screen_debug_logged = True
-            
+
             # For RichLog, clear and write new content
             self.c64_display.clear()
             self.c64_display.write(screen_content)
@@ -248,7 +248,7 @@ class TextualInterface(App):
         # Skip debug logging in fullscreen mode
         if self.fullscreen:
             return
-            
+
         from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_message = f"[{timestamp}] {message}"
@@ -330,7 +330,7 @@ class TextualInterface(App):
             self.add_debug_log("📺 Screen memory dump:")
             for line in lines:
                 self.add_debug_log(f"  {line}")
-            
+
             # Dump first 16 bytes at $0801
             self.add_debug_log("📝 Memory dump at $0801 (first 16 bytes):")
             bytes_list = []
@@ -338,7 +338,7 @@ class TextualInterface(App):
                 byte_val = self.emulator.memory.read(0x0801 + i)
                 bytes_list.append(f"${byte_val:02X}")
             self.add_debug_log(f"  {', '.join(bytes_list)}")
-            
+
             # Also show BASIC pointers
             basic_start = self.emulator.memory.read(0x002B) | (self.emulator.memory.read(0x002C) << 8)
             basic_end = self.emulator.memory.read(0x002D) | (self.emulator.memory.read(0x002E) << 8)
@@ -350,7 +350,7 @@ class TextualInterface(App):
         if not char:
             return 0
         ascii_code = ord(char)
-        
+
         # Basic ASCII to PETSCII conversion
         # PETSCII uppercase letters: 0x41-0x5A (A-Z)
         # PETSCII lowercase letters: 0x61-0x7A (a-z) but shifted
@@ -371,16 +371,16 @@ class TextualInterface(App):
         """Echo a character to the screen at current cursor position"""
         if not self.emulator:
             return
-        
+
         # Get cursor position from zero-page
         cursor_low = self.emulator.memory.read(0xD1)
         cursor_high = self.emulator.memory.read(0xD2)
         cursor_addr = cursor_low | (cursor_high << 8)
-        
+
         # If cursor is invalid, start at screen base
         if cursor_addr < SCREEN_MEM or cursor_addr >= SCREEN_MEM + 1000:
             cursor_addr = SCREEN_MEM
-        
+
         # Handle special characters
         if petscii_code == 0x0D:  # Carriage return
             # Move to next line, scroll if at bottom
@@ -410,17 +410,17 @@ class TextualInterface(App):
                     self.emulator.memory._scroll_screen_up()
                     # Cursor moves to start of bottom row (row 24, column 0)
                     cursor_addr = SCREEN_MEM + 24 * 40
-        
+
         # Update cursor position
         self.emulator.memory.write(0xD1, cursor_addr & 0xFF)
         self.emulator.memory.write(0xD2, (cursor_addr >> 8) & 0xFF)
-        
+
         # Also update row and column variables
         row = (cursor_addr - SCREEN_MEM) // 40
         col = (cursor_addr - SCREEN_MEM) % 40
         self.emulator.memory.write(0xD3, row)  # Cursor row
         self.emulator.memory.write(0xD8, col)  # Cursor column
-        
+
         # Update the text screen representation for display
         self.emulator._update_text_screen()
 
@@ -428,44 +428,44 @@ class TextualInterface(App):
         """Handle backspace - erase character at cursor and move cursor back"""
         if not self.emulator:
             return
-        
+
         # Get cursor position
         cursor_low = self.emulator.memory.read(0xD1)
         cursor_high = self.emulator.memory.read(0xD2)
         cursor_addr = cursor_low | (cursor_high << 8)
-        
+
         # If cursor is invalid, reset to screen start
         if cursor_addr < SCREEN_MEM or cursor_addr >= SCREEN_MEM + 1000:
             cursor_addr = SCREEN_MEM
-        
+
         # Don't backspace if we're at the start of screen
         if cursor_addr <= SCREEN_MEM:
             return
-        
+
         # Move cursor back one position
         cursor_addr -= 1
-        
+
         # Handle wrapping to previous line if we're at the start of a line
         if (cursor_addr - SCREEN_MEM) % 40 == 39 and cursor_addr > SCREEN_MEM:
             # We wrapped to end of previous line - this shouldn't happen with simple backspace
             # But if it does, just stay at current position
             cursor_addr += 1
             return
-        
+
         # Erase character at cursor position (write space)
         if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
             self.emulator.memory.write(cursor_addr, 0x20)  # Space
-        
+
         # Update cursor position
         self.emulator.memory.write(0xD1, cursor_addr & 0xFF)
         self.emulator.memory.write(0xD2, (cursor_addr >> 8) & 0xFF)
-        
+
         # Also update row and column variables
         row = (cursor_addr - SCREEN_MEM) // 40
         col = (cursor_addr - SCREEN_MEM) % 40
         self.emulator.memory.write(0xD3, row)  # Cursor row
         self.emulator.memory.write(0xD8, col)  # Cursor column
-        
+
         # Update the text screen representation for display
         self.emulator._update_text_screen()
 
@@ -477,7 +477,7 @@ class TextualInterface(App):
             if event.key == "ctrl+x" or event.key == "ctrl+q":
                 self.action_quit()
             return
-        
+
         # Handle special keys first
         if event.key == "ctrl+x" or event.key == "ctrl+q":
             self.action_quit()
@@ -486,41 +486,41 @@ class TextualInterface(App):
             # ESC might be used for something, but for now just ignore
             event.prevent_default()
             return
-        
+
         # Only process printable characters when emulator is running
         if not self.emulator or not self.emulator.running:
             return
-        
+
         # Handle backspace - remove last character from buffer AND erase from screen
         # This handles both cases: character still in buffer, or already processed
         if event.key == "backspace":
             kb_buf_base = 0x0277
             kb_buf_len = self.emulator.memory.read(0xC6)
-            
+
             if kb_buf_len > 0:
                 # Character is still in buffer - remove it
                 kb_buf_len -= 1
                 self.emulator.memory.write(kb_buf_base + kb_buf_len, 0)
                 self.emulator.memory.write(0xC6, kb_buf_len)
                 self.add_debug_log(f"⌨️  Backspace (removed from buffer) -> buffer len={kb_buf_len}")
-            
+
             # Always erase from screen and move cursor back
             # This handles the case where character was already read by BASIC
             self._handle_backspace()
-            
+
             event.prevent_default()
             return
-        
+
         # Check if character is printable
         if event.is_printable and event.character:
             char = event.character
             # Convert to PETSCII
             petscii_code = self._ascii_to_petscii(char)
-            
+
             # Put character into keyboard buffer ($0277-$0280)
             kb_buf_base = 0x0277
             kb_buf_len = self.emulator.memory.read(0xC6)
-            
+
             # Check if buffer has space (max 10 characters)
             if kb_buf_len < 10:
                 # Add character to end of buffer
@@ -545,7 +545,7 @@ class TextualInterface(App):
                 self.add_debug_log(f"⌨️  Enter pressed (CR) -> buffer len={kb_buf_len}")
             else:
                 self.add_debug_log("⌨️  Keyboard buffer full, ignoring Enter")
-        
+
         # Prevent default handling for most keys (so they go to C64, not Textual)
         if event.is_printable or event.key == "enter":
             event.prevent_default()

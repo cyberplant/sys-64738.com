@@ -14,7 +14,7 @@ from typing import Dict
 
 class UdpDebugLogger:
     """UDP debug logger for tracing emulator execution (async)"""
-    
+
     def __init__(self, port: int = 64738, host: str = "127.0.0.1"):
         self.port = port
         self.host = host
@@ -23,7 +23,7 @@ class UdpDebugLogger:
         self.queue = queue.Queue(maxsize=1000000)  # Buffer up to 100k events (increased for 100% logging)
         self.worker_thread = None
         self.running = False
-        
+
     def enable(self) -> None:
         """Enable UDP debug logging"""
         try:
@@ -36,7 +36,7 @@ class UdpDebugLogger:
         except Exception as e:
             print(f"Warning: Failed to create UDP socket for debug: {e}", file=sys.stderr)
             self.enabled = False
-    
+
     def _worker(self) -> None:
         """Worker thread that sends UDP messages asynchronously"""
         while self.running:
@@ -61,12 +61,12 @@ class UdpDebugLogger:
                 continue
             except Exception:
                 pass  # Silently ignore UDP errors
-    
+
     def send(self, event_type: str, data: Dict) -> None:
         """Queue debug event for async sending (non-blocking)"""
         if not self.enabled:
             return
-        
+
         try:
             message = {
                 'timestamp': datetime.now().isoformat(),
@@ -75,7 +75,7 @@ class UdpDebugLogger:
             }
             json_msg = json.dumps(message)
             message_bytes = json_msg.encode('utf-8') + b"\n"
-            
+
             # Try to put in queue (non-blocking if queue is full)
             try:
                 self.queue.put_nowait(message_bytes)
@@ -94,7 +94,7 @@ class UdpDebugLogger:
                     pass
         except Exception:
             pass  # Silently ignore errors
-    
+
     def close(self) -> None:
         """Close UDP socket and stop worker thread, flushing all pending messages"""
         self.running = False

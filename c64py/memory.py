@@ -35,11 +35,11 @@ class MemoryMap:
     raster_cycles: int = 0  # Cycle counter for raster timing
     vic_interrupt_state: int = 0  # VIC interrupt state for D019
     jiffy_cycles: int = 0  # Cycle counter for jiffy clock
-    
+
     def read(self, addr: int) -> int:
         """Read from memory, handling ROM/RAM mapping"""
         addr &= 0xFFFF
-        
+
         # I/O area (can be ROM or RAM depending on memory config)
         if ROM_CHAR_START <= addr < ROM_CHAR_END:
             # Check if I/O is enabled (bit 0 of $01)
@@ -50,29 +50,29 @@ class MemoryMap:
                 return self.char_rom[addr - ROM_CHAR_START]
             else:
                 return self.ram[addr]
-        
+
         # BASIC ROM
         if ROM_BASIC_START <= addr < ROM_BASIC_END:
             if self.ram[0x01] & 0x07 == 0x07:  # BASIC ROM enabled
                 if self.basic_rom:
                     return self.basic_rom[addr - ROM_BASIC_START]
             return self.ram[addr]
-        
+
         # KERNAL ROM
         if ROM_KERNAL_START <= addr < ROM_KERNAL_END:
             if self.ram[0x01] & 0x07 == 0x07:  # KERNAL ROM enabled
                 if self.kernal_rom:
                     return self.kernal_rom[addr - ROM_KERNAL_START]
             return self.ram[addr]
-        
+
         # RAM
         return self.ram[addr]
-    
+
     def write(self, addr: int, value: int) -> None:
         """Write to memory (only RAM, ROM writes are ignored)"""
         addr &= 0xFFFF
         value &= 0xFF
-        
+
         # Log memory writes if UDP debug is enabled (only screen writes to reduce overhead)
         if self.udp_debug and self.udp_debug.enabled:
             # Only log screen writes (most important for seeing output)
@@ -85,7 +85,7 @@ class MemoryMap:
         # Trigger screen update when screen or color memory changes
         # Note: Screen updates are handled by the emulator's update thread
         # This is just a placeholder for potential future immediate updates
-        
+
         # ROM areas - writes go to RAM underneath
         if ROM_BASIC_START <= addr < ROM_BASIC_END:
             self.ram[addr] = value
@@ -99,48 +99,48 @@ class MemoryMap:
                 self.ram[addr] = value
         else:
             self.ram[addr] = value
-    
+
     def _read_io(self, addr: int) -> int:
         """Read from I/O registers"""
         # VIC registers
         if VIC_BASE <= addr < VIC_BASE + 0x40:
             return self._read_vic(addr - VIC_BASE)
-        
+
         # SID registers
         if SID_BASE <= addr < SID_BASE + 0x20:
             return 0  # SID not implemented yet
-        
+
         # CIA1
         if CIA1_BASE <= addr < CIA1_BASE + 0x10:
             return self._read_cia1(addr - CIA1_BASE)
-        
+
         # CIA2
         if CIA2_BASE <= addr < CIA2_BASE + 0x10:
             return self._read_cia2(addr - CIA2_BASE)
-        
+
         return 0
-    
+
     def _write_io(self, addr: int, value: int) -> None:
         """Write to I/O registers"""
         # VIC registers
         if VIC_BASE <= addr < VIC_BASE + 0x40:
             self._write_vic(addr - VIC_BASE, value)
             return
-        
+
         # SID registers
         if SID_BASE <= addr < SID_BASE + 0x20:
             return  # SID not implemented yet
-        
+
         # CIA1
         if CIA1_BASE <= addr < CIA1_BASE + 0x10:
             self._write_cia1(addr - CIA1_BASE, value)
             return
-        
+
         # CIA2
         if CIA2_BASE <= addr < CIA2_BASE + 0x10:
             self._write_cia2(addr - CIA2_BASE, value)
             return
-    
+
     def _read_vic(self, reg: int) -> int:
         """Read VIC-II register"""
         if reg == 0x11:  # VIC control register 1
@@ -159,7 +159,7 @@ class MemoryMap:
             return (self._vic_regs[0x21] if 0x21 < len(self._vic_regs) else 0x06) & 0x0F  # Default blue
         # Other registers return stored values or 0
         return self._vic_regs[reg] if reg < len(self._vic_regs) else 0
-    
+
     def _write_vic(self, reg: int, value: int) -> None:
         """Write VIC-II register"""
         # Store VIC register state
@@ -172,7 +172,7 @@ class MemoryMap:
             # Writing to D019 acknowledges interrupts
             # For simulation, reset interrupt state
             self.vic_interrupt_state = 0
-    
+
     def _read_cia1(self, reg: int) -> int:
         """Read CIA1 register"""
         # Timer A low byte
@@ -216,7 +216,7 @@ class MemoryMap:
             return result
         # Other registers (keyboard, joystick, etc.) - return 0 for now
         return 0
-    
+
     def _write_cia1(self, reg: int, value: int) -> None:
         """Write CIA1 register"""
         # Timer A latch low byte
@@ -278,12 +278,12 @@ class MemoryMap:
             self.cia1_timer_b.one_shot = (value & 0x08) != 0
             # Bits 5-6: Input mode
             self.cia1_timer_b.input_mode = (value >> 5) & 0x03
-    
+
     def _read_cia2(self, reg: int) -> int:
         """Read CIA2 register"""
         # Serial bus, etc.
         return 0
-    
+
     def _write_cia2(self, reg: int, value: int) -> None:
         """Write CIA2 register"""
         pass
