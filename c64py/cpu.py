@@ -69,7 +69,7 @@ class CPU6502:
             # Sample logging to avoid queue overflow (log every 100 cycles or important events)
             should_log = (self.state.cycles % 100 == 0) or (opcode == 0x00)  # Log BRK instructions
 
-            should_log = (self.state.cycles > 2000000)
+            should_log = (self.state.cycles > 2020000)
 
             if should_log:
                 # Minimal data to reduce JSON/serialization overhead
@@ -127,9 +127,12 @@ class CPU6502:
                 
                 self.state.a = char
             else:
-                # No input available - inject "RUN\n" to auto-run loaded programs
-                # Only inject if a program was loaded via command line
-                # Only inject once when buffer is empty (BASIC is ready for input)
+                # CHRIN should BLOCK when keyboard buffer is empty
+                # On real C64, CHRIN waits for screen editor to collect input line
+                # We should NOT return 0 - instead, don't advance PC (block)
+                # However, for emulation, we need to handle RUN injection
+                
+                # Inject "RUN" command if program was loaded (only once)
                 if self.interface and hasattr(self.interface, 'emulator') and self.interface.emulator.program_loaded:
                     if not hasattr(self, '_run_injected'):
                         self._run_injected = True
@@ -146,9 +149,31 @@ class CPU6502:
                         self.memory.write(0xC6, min(len(run_command), 10))  # Set buffer length (max 10)
                         if self.interface:
                             self.interface.add_debug_log("💾 Injected 'RUN' command into keyboard buffer")
-
-                # Return 0 (no input)
-                self.state.a = 0
+                        # After injection, retry reading from buffer
+                        kb_buf_len = self.memory.read(0xC6)
+                        if kb_buf_len > 0:
+                            # Buffer now has data, read it
+                            char = self.memory.read(kb_buf_base)
+                            # Shift buffer
+                            for i in range(kb_buf_len - 1):
+                                next_char = self.memory.read(kb_buf_base + i + 1)
+                                self.memory.write(kb_buf_base + i, next_char)
+                            self.memory.write(kb_buf_base + kb_buf_len - 1, 0)
+                            kb_buf_len = (kb_buf_len - 1) & 0xFF
+                            self.memory.write(0xC6, kb_buf_len)
+                            self.state.a = char
+                        else:
+                            # Still empty after injection (shouldn't happen)
+                            # Block by not advancing PC
+                            return 1  # Return minimal cycles, PC stays at CHRIN
+                    else:
+                        # Already injected, buffer still empty - block
+                        # Don't advance PC, return minimal cycles
+                        return 1  # Block: PC stays at $FFCF
+                else:
+                    # No program loaded, buffer empty - block
+                    # Don't advance PC, return minimal cycles  
+                    return 1  # Block: PC stays at $FFCF
             
             # Return from JSR (RTS behavior) - only if we actually returned a character
             # If we're blocking (returned early), don't do RTS - PC stays at CHRIN
