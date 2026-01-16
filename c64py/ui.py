@@ -471,22 +471,22 @@ class TextualInterface(App):
         if not self.emulator or not self.emulator.running:
             return
         
-        # Handle backspace - inject PETSCII backspace (0x14) into keyboard buffer
-        # This allows BASIC to process the backspace correctly
+        # Handle backspace - remove last character from buffer AND erase from screen
+        # This handles both cases: character still in buffer, or already processed
         if event.key == "backspace":
             kb_buf_base = 0x0277
             kb_buf_len = self.emulator.memory.read(0xC6)
             
-            # Check if buffer has space (max 10 characters)
-            if kb_buf_len < 10:
-                # Inject PETSCII backspace character (0x14 = cursor left/delete)
-                # This is what the C64 screen editor uses for backspace
-                self.emulator.memory.write(kb_buf_base + kb_buf_len, 0x14)
-                kb_buf_len += 1
+            if kb_buf_len > 0:
+                # Character is still in buffer - remove it
+                kb_buf_len -= 1
+                self.emulator.memory.write(kb_buf_base + kb_buf_len, 0)
                 self.emulator.memory.write(0xC6, kb_buf_len)
-                self.add_debug_log(f"⌨️  Backspace (PETSCII 0x14) -> buffer len={kb_buf_len}")
-            else:
-                self.add_debug_log("⌨️  Keyboard buffer full, ignoring backspace")
+                self.add_debug_log(f"⌨️  Backspace (removed from buffer) -> buffer len={kb_buf_len}")
+            
+            # Always erase from screen and move cursor back
+            # This handles the case where character was already read by BASIC
+            self._handle_backspace()
             
             event.prevent_default()
             return
@@ -507,7 +507,8 @@ class TextualInterface(App):
                 self.emulator.memory.write(kb_buf_base + kb_buf_len, petscii_code)
                 kb_buf_len += 1
                 self.emulator.memory.write(0xC6, kb_buf_len)
-                # Echo character to screen
+                # Echo character to screen immediately for user feedback
+                # CHROUT will also be called when BASIC reads it, but that's OK - it will just overwrite the same character
                 self._echo_character(petscii_code)
                 self.add_debug_log(f"⌨️  Key pressed: '{char}' (PETSCII ${petscii_code:02X}) -> buffer len={kb_buf_len}")
             else:
@@ -520,7 +521,7 @@ class TextualInterface(App):
                 self.emulator.memory.write(kb_buf_base + kb_buf_len, 0x0D)  # CR
                 kb_buf_len += 1
                 self.emulator.memory.write(0xC6, kb_buf_len)
-                # Echo CR to screen (newline)
+                # Echo CR to screen immediately for user feedback
                 self._echo_character(0x0D)
                 self.add_debug_log(f"⌨️  Enter pressed (CR) -> buffer len={kb_buf_len}")
             else:

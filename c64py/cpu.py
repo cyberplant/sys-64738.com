@@ -260,12 +260,14 @@ class CPU6502:
                 pass
             elif char == 0x14:  # Backspace/Delete (PETSCII DEL)
                 # Move cursor left and erase character
+                # On C64, backspace moves left and deletes the character at the new position
                 if cursor_addr > SCREEN_MEM:
                     cursor_addr -= 1
-                    # Erase character at cursor position
+                    # Erase character at cursor position (write space)
                     if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
                         self.memory.write(cursor_addr, 0x20)  # Space
                 # If at start of screen, do nothing (can't backspace further)
+                # Note: cursor_addr is already updated above, so we continue to update cursor position
             elif char == 0x93:  # Clear screen
                 for addr in range(SCREEN_MEM, SCREEN_MEM + 1000):
                     self.memory.write(addr, 0x20)  # Space
