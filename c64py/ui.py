@@ -83,6 +83,9 @@ class TextualInterface(App):
         self.c64_display = None
         self.debug_logs = None
         self.status_bar = None
+        # Local input buffer for managing typed characters before sending to C64
+        # This allows backspace to work correctly by removing characters before they're sent
+        self.input_buffer = []  # List of PETSCII codes
 
     def compose(self) -> ComposeResult:
         if not self.fullscreen:
@@ -507,8 +510,7 @@ class TextualInterface(App):
                 self.emulator.memory.write(kb_buf_base + kb_buf_len, petscii_code)
                 kb_buf_len += 1
                 self.emulator.memory.write(0xC6, kb_buf_len)
-                # Echo character to screen immediately for user feedback
-                # CHROUT will also be called when BASIC reads it, but that's OK - it will just overwrite the same character
+                # Echo character to screen
                 self._echo_character(petscii_code)
                 self.add_debug_log(f"⌨️  Key pressed: '{char}' (PETSCII ${petscii_code:02X}) -> buffer len={kb_buf_len}")
             else:
@@ -521,7 +523,7 @@ class TextualInterface(App):
                 self.emulator.memory.write(kb_buf_base + kb_buf_len, 0x0D)  # CR
                 kb_buf_len += 1
                 self.emulator.memory.write(0xC6, kb_buf_len)
-                # Echo CR to screen immediately for user feedback
+                # Echo Enter (CR) to screen
                 self._echo_character(0x0D)
                 self.add_debug_log(f"⌨️  Enter pressed (CR) -> buffer len={kb_buf_len}")
             else:

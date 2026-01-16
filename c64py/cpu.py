@@ -99,198 +99,81 @@ class CPU6502:
         # Check if we're at a KERNAL vector that needs handling
         # CHRIN ($FFCF) - Input character from keyboard
         if pc == 0xFFCF:
-            # CHRIN implementation with proper line editing
-            # On real C64, CHRIN enters line-editing mode when keyboard buffer is empty
-            # It collects the line into input buffer ($0200-$0258) and processes control codes
-            # Input buffer stores characters FORWARD from $0200
+            # CHRIN - return character from keyboard buffer
+            # Keyboard buffer is at $0277-$0280 (10 bytes)
+            # $C6 contains the number of characters in buffer
+            kb_buf_len = self.memory.read(0xC6)  # Number of chars in buffer
+            # Clamp buffer length to valid range (0-10)
+            if kb_buf_len > 10:
+                kb_buf_len = 10
+                self.memory.write(0xC6, kb_buf_len)
             
-            # Use $029B as read position (0-based index into input buffer)
-            # Use $029C as total length of line in input buffer
-            # When $029B >= $029C, buffer is empty (all characters read)
-            input_buf_read_pos = self.memory.read(0x029B)  # Current read position (0-based)
-            input_buf_total_len = self.memory.read(0x029C)  # Total length of line
-            input_buf_base = 0x0200  # BASIC input buffer (stores forward from here)
-            
-            if input_buf_read_pos < input_buf_total_len and input_buf_total_len > 0:
-                # We have characters in the input buffer - return next character
-                # Input buffer is filled forward from $0200
-                char = self.memory.read(input_buf_base + input_buf_read_pos)
-                input_buf_read_pos += 1
-                self.memory.write(0x029B, input_buf_read_pos)
+            if kb_buf_len > 0:
+                # Read first character from buffer (at $0277)
+                kb_buf_base = 0x0277
+                char = self.memory.read(kb_buf_base)
+                
+                # Shift remaining characters down (C64 KERNAL behavior)
+                for i in range(kb_buf_len - 1):
+                    next_char = self.memory.read(kb_buf_base + i + 1)
+                    self.memory.write(kb_buf_base + i, next_char)
+                
+                # Clear the last position
+                self.memory.write(kb_buf_base + kb_buf_len - 1, 0)
+                
+                # Decrement buffer length
+                kb_buf_len = (kb_buf_len - 1) & 0xFF
+                self.memory.write(0xC6, kb_buf_len)
+                
                 self.state.a = char
-                
-                # If we've read all characters, reset for next line
-                if input_buf_read_pos >= input_buf_total_len:
-                    self.memory.write(0x029B, 0)  # Reset read position
-                    self.memory.write(0x029C, 0)  # Reset total length
-                # Next CHRIN will start new line editing if buffer is empty
             else:
-                # No characters in input buffer - enter line editing mode
-                # Read from keyboard buffer and collect into input buffer
-                kb_buf_len = self.memory.read(0xC6)  # Number of chars in keyboard buffer
-                # Clamp buffer length to valid range (0-10)
-                if kb_buf_len > 10:
-                    kb_buf_len = 10
-                    self.memory.write(0xC6, kb_buf_len)
+                # CHRIN should BLOCK when keyboard buffer is empty
+                # On real C64, CHRIN waits for screen editor to collect input line
+                # We should NOT return 0 - instead, don't advance PC (block)
+                # However, for emulation, we need to handle RUN injection
                 
-                if kb_buf_len > 0:
-                    # Read first character from keyboard buffer
-                    kb_buf_base = 0x0277
-                    char = self.memory.read(kb_buf_base)
-                    
-                    # Shift remaining characters down (C64 KERNAL behavior)
-                    for i in range(kb_buf_len - 1):
-                        next_char = self.memory.read(kb_buf_base + i + 1)
-                        self.memory.write(kb_buf_base + i, next_char)
-                    
-                    # Clear the last position
-                    self.memory.write(kb_buf_base + kb_buf_len - 1, 0)
-                    
-                    # Decrement buffer length
-                    kb_buf_len = (kb_buf_len - 1) & 0xFF
-                    self.memory.write(0xC6, kb_buf_len)
-                    
-                    # Get current line editing state
-                    # Use $029C to track how many chars we've collected during line editing
-                    line_edit_len = self.memory.read(0x029C)
-                    if line_edit_len > 88:
-                        line_edit_len = 0  # Reset if invalid
-                    
-                    # Process the character during line editing
-                    if char == 0x0D:  # Carriage Return - end of line
-                        # Line editing complete - characters are already in input buffer
-                        # Add CR at end
-                        if line_edit_len < 88:
-                            self.memory.write(input_buf_base + line_edit_len, 0x0D)
-                            line_edit_len += 1
-                        
-                        # Store total length (including CR) in $029C
-                        total_len = line_edit_len
-                        self.memory.write(0x029C, total_len)
-                        
-                        # Set read position to 0 (start of buffer)
-                        self.memory.write(0x029B, 0)
-                        
-                        # Return the first character
-                        if total_len > 0:
-                            self.state.a = self.memory.read(input_buf_base)  # First char at $0200
-                            self.memory.write(0x029B, 1)  # Next read will be at position 1
+                # Inject "RUN" command if program was loaded (only once)
+                if self.interface and hasattr(self.interface, 'emulator') and self.interface.emulator.program_loaded:
+                    if not hasattr(self, '_run_injected'):
+                        self._run_injected = True
+                        run_command = b"RUN\x0D"  # RUN + carriage return
+                        # Put RUN command into keyboard buffer at correct position
+                        kb_buf_base = 0x0277
+                        # Clear buffer first
+                        for i in range(10):
+                            self.memory.write(kb_buf_base + i, 0)
+                        # Write command
+                        for i, char in enumerate(run_command):
+                            if i < 10:  # Buffer is only 10 bytes
+                                self.memory.write(kb_buf_base + i, char)
+                        self.memory.write(0xC6, min(len(run_command), 10))  # Set buffer length (max 10)
+                        if self.interface:
+                            self.interface.add_debug_log("💾 Injected 'RUN' command into keyboard buffer")
+                        # After injection, retry reading from buffer
+                        kb_buf_len = self.memory.read(0xC6)
+                        if kb_buf_len > 0:
+                            # Buffer now has data, read it
+                            char = self.memory.read(kb_buf_base)
+                            # Shift buffer
+                            for i in range(kb_buf_len - 1):
+                                next_char = self.memory.read(kb_buf_base + i + 1)
+                                self.memory.write(kb_buf_base + i, next_char)
+                            self.memory.write(kb_buf_base + kb_buf_len - 1, 0)
+                            kb_buf_len = (kb_buf_len - 1) & 0xFF
+                            self.memory.write(0xC6, kb_buf_len)
+                            self.state.a = char
                         else:
-                            # Empty line - just CR
-                            self.state.a = 0x0D
-                            self.memory.write(0x029B, 1)  # Mark CR as read
-                    elif char == 0x14:  # Backspace/Delete
-                        # Process backspace during line editing
-                        # Remove last character from input buffer if we have one
-                        if line_edit_len > 0:
-                            # Shift remaining characters left to fill the gap
-                            # Character to remove is at position (line_edit_len - 1)
-                            for i in range(line_edit_len - 1, 88):
-                                next_char = self.memory.read(input_buf_base + i + 1)
-                                self.memory.write(input_buf_base + i, next_char)
-                            # Clear the last position
-                            self.memory.write(input_buf_base + 88, 0)
-                            line_edit_len -= 1
-                            self.memory.write(0x029C, line_edit_len)
-                        
-                        # Process backspace on screen
-                        cursor_low = self.memory.read(0xD1)
-                        cursor_high = self.memory.read(0xD2)
-                        cursor_addr = cursor_low | (cursor_high << 8)
-                        
-                        # Move cursor left and erase if not at start
-                        if cursor_addr > SCREEN_MEM:
-                            cursor_addr -= 1
-                            # Erase character at cursor position
-                            if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
-                                self.memory.write(cursor_addr, 0x20)  # Space
-                            # Update cursor position
-                            self.memory.write(0xD1, cursor_addr & 0xFF)
-                            self.memory.write(0xD2, (cursor_addr >> 8) & 0xFF)
-                            row = (cursor_addr - SCREEN_MEM) // 40
-                            col = (cursor_addr - SCREEN_MEM) % 40
-                            self.memory.write(0xD3, row)
-                            self.memory.write(0xD8, col)
-                        
-                        # Backspace is processed, not returned - continue line editing
-                        return 1  # Block, don't return character
+                            # Still empty after injection (shouldn't happen)
+                            # Block by not advancing PC
+                            return 1  # Return minimal cycles, PC stays at CHRIN
                     else:
-                        # Regular character - store in input buffer and echo to screen
-                        if line_edit_len < 88:  # Max 88 characters
-                            # Store character in input buffer (forward from $0200)
-                            self.memory.write(input_buf_base + line_edit_len, char)
-                            line_edit_len += 1
-                            self.memory.write(0x029C, line_edit_len)
-                            
-                            # Echo character to screen (screen editor displays it)
-                            cursor_low = self.memory.read(0xD1)
-                            cursor_high = self.memory.read(0xD2)
-                            cursor_addr = cursor_low | (cursor_high << 8)
-                            if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
-                                self.memory.write(cursor_addr, char)
-                                cursor_addr += 1
-                                if cursor_addr >= SCREEN_MEM + 1000:
-                                    cursor_addr = SCREEN_MEM
-                                # Update cursor position
-                                self.memory.write(0xD1, cursor_addr & 0xFF)
-                                self.memory.write(0xD2, (cursor_addr >> 8) & 0xFF)
-                                row = (cursor_addr - SCREEN_MEM) // 40
-                                col = (cursor_addr - SCREEN_MEM) % 40
-                                self.memory.write(0xD3, row)
-                                self.memory.write(0xD8, col)
-                            
-                            # Character is stored but not returned yet - continue line editing
-                            return 1  # Block, continue line editing
-                        else:
-                            # Buffer full - ignore character
-                            return 1  # Block
-                else:
-                    # Keyboard buffer empty - block and wait for input
-                    # CHRIN will enter line-editing mode when characters arrive
-                    # However, for emulation, we need to handle RUN injection
-                    
-                    # Inject "RUN" command if program was loaded (only once)
-                    if self.interface and hasattr(self.interface, 'emulator') and self.interface.emulator.program_loaded:
-                        if not hasattr(self, '_run_injected'):
-                            self._run_injected = True
-                            run_command = b"RUN\x0D"  # RUN + carriage return
-                            # Put RUN command into keyboard buffer at correct position
-                            kb_buf_base = 0x0277
-                            # Clear buffer first
-                            for i in range(10):
-                                self.memory.write(kb_buf_base + i, 0)
-                            # Write command
-                            for i, char in enumerate(run_command):
-                                if i < 10:  # Buffer is only 10 bytes
-                                    self.memory.write(kb_buf_base + i, char)
-                            self.memory.write(0xC6, min(len(run_command), 10))  # Set buffer length (max 10)
-                            if self.interface:
-                                self.interface.add_debug_log("💾 Injected 'RUN' command into keyboard buffer")
-                            # After injection, retry reading from buffer
-                            kb_buf_len = self.memory.read(0xC6)
-                            if kb_buf_len > 0:
-                                # Buffer now has data, read it
-                                char = self.memory.read(kb_buf_base)
-                                # Shift buffer
-                                for i in range(kb_buf_len - 1):
-                                    next_char = self.memory.read(kb_buf_base + i + 1)
-                                    self.memory.write(kb_buf_base + i, next_char)
-                                self.memory.write(kb_buf_base + kb_buf_len - 1, 0)
-                                kb_buf_len = (kb_buf_len - 1) & 0xFF
-                                self.memory.write(0xC6, kb_buf_len)
-                                self.state.a = char
-                            else:
-                                # Still empty after injection (shouldn't happen)
-                                # Block by not advancing PC
-                                return 1  # Return minimal cycles, PC stays at CHRIN
-                        else:
-                            # Already injected, buffer still empty - block
-                            # Don't advance PC, return minimal cycles
-                            return 1  # Block: PC stays at $FFCF
-                    else:
-                        # No program loaded, buffer empty - block
-                        # Don't advance PC, return minimal cycles  
+                        # Already injected, buffer still empty - block
+                        # Don't advance PC, return minimal cycles
                         return 1  # Block: PC stays at $FFCF
+                else:
+                    # No program loaded, buffer empty - block
+                    # Don't advance PC, return minimal cycles  
+                    return 1  # Block: PC stays at $FFCF
             
             # Return from JSR (RTS behavior) - only if we actually returned a character
             # If we're blocking (returned early), don't do RTS - PC stays at CHRIN
