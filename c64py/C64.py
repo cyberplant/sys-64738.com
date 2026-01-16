@@ -98,9 +98,11 @@ def main():
         rom_dir = args.rom_dir
     emu.load_roms(rom_dir)
 
-    # Load PRG if provided
+    # Store PRG file path for loading after boot (BASIC boot clears $0801-$0802)
     if args.prg_file:
-        emu.load_prg(args.prg_file)
+        emu.prg_file_path = args.prg_file
+        if not args.fullscreen:
+            emu.interface.add_debug_log(f"📂 PRG file will be loaded after BASIC boot: {args.prg_file}")
 
     # Initialize CPU (use _read_word to ensure correct byte order and ROM mapping)
     reset_vector = emu.cpu._read_word(0xFFFC)
@@ -113,22 +115,25 @@ def main():
         emu.interface.add_debug_log(f"💾 Memory config ($01): ${emu.memory.ram[0x01]:02X}")
         emu.interface.add_debug_log(f"📺 Screen memory sample ($0400-$040F): {[hex(emu.memory.ram[0x0400 + i]) for i in range(16)]}")
 
-    # Start server if requested
+    # Start server if requested (runs in parallel with UI)
     server = None
     if args.tcp_port or args.udp_port:
         server = EmulatorServer(emu, tcp_port=args.tcp_port, udp_port=args.udp_port)
         server.start()
-        emu.running = True  # Set running flag so server loop doesn't exit immediately
-        emu.interface.add_debug_log("🚀 C64 Emulator started (server mode)")
-        emu.interface.add_debug_log("📡 Server commands: STATUS, STEP, RUN, MEMORY, DUMP, SCREEN, LOAD")
-        print("Server started. Use commands like: STATUS, STEP, RUN, MEMORY, DUMP, SCREEN, LOAD")
-        print("Press Ctrl+C to stop")
-        server_active = True
-    else:
-        server_active = False
+        if not args.fullscreen:
+            emu.interface.add_debug_log("📡 TCP/UDP server started")
+            emu.interface.add_debug_log("📡 Server commands: STATUS, STEP, RUN, MEMORY, DUMP, SCREEN, LOAD")
+        print("Server started on port(s): ", end="")
+        if args.tcp_port:
+            print(f"TCP:{args.tcp_port}", end="")
+        if args.tcp_port and args.udp_port:
+            print(", ", end="")
+        if args.udp_port:
+            print(f"UDP:{args.udp_port}", end="")
+        print()
 
-    # Start Textual interface if not in server mode
-    if not server_active and not args.no_colors:
+    # Start Textual interface (unless explicitly disabled with --no-colors)
+    if not args.no_colors:
         emu.interface.max_cycles = args.max_cycles
         # fullscreen flag already set earlier
         if not args.fullscreen:
@@ -144,19 +149,16 @@ def main():
                     print("\n=== Last log messages ===")
                     for line in last_lines:
                         print(line)
+        # After UI closes, stop server if running
+        if server:
+            server.running = False
         return  # Exit after Textual interface closes
 
-    # Run emulator
+    # This code should never be reached since Textual blocks
+    # But if --no-colors is used, we fall through here
     try:
-        if server:
-            # If server is running, don't auto-run - wait for commands
-            print("Emulator ready. Waiting for commands...")
-            while server.running and emu.running:
-                time.sleep(0.1)
-        else:
-            # This code should never be reached since Textual blocks
-            print("Running emulator...")
-            emu.run(args.max_cycles)
+        print("Running emulator...")
+        emu.run(args.max_cycles)
     except KeyboardInterrupt:
         print("\nStopping emulator...")
         emu.running = False

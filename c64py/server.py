@@ -87,27 +87,38 @@ class EmulatorServer:
         
         cmd = parts[0].upper()
         
-        if cmd == "STATUS":
+        if cmd == "HELP" or cmd == "?":
+            return """C64 Emulator TCP Server Commands:
+STATUS              - Get current CPU state (PC, A, X, Y, SP, P, CYCLES)
+SYS <address>       - Jump PC to address and continue execution (hex, e.g. $0400 or 0400)
+MEMORY <address>    - Read memory at address (hex, e.g. $0400 or 0400)
+WRITE <addr> <val>  - Write value to memory address (hex)
+DUMP [start] [end]  - Dump memory range as hex (default: $0000-$FFFF)
+SCREEN              - Get current screen contents (plain text)
+LOAD <file>         - Load PRG file
+STOP                - Stop emulator execution
+QUIT/EXIT           - Quit server and emulator
+HELP/?              - Show this help message"""
+        
+        elif cmd == "STATUS":
             state = self.emu.get_cpu_state()
-            return f"PC=${state['pc']:04X} A=${state['a']:02X} X=${state['x']:02X} Y=${state['y']:02X} SP=${state['sp']:02X} P=${state['p']:02X} CYCLES={state['cycles']}"
+            # Use current_cycles if available (from emulator.run()), otherwise use cpu.state.cycles
+            cycles = getattr(self.emu, 'current_cycles', None)
+            if cycles is None:
+                cycles = state['cycles']
+            return f"PC=${state['pc']:04X} A=${state['a']:02X} X=${state['x']:02X} Y=${state['y']:02X} SP=${state['sp']:02X} P=${state['p']:02X} CYCLES={cycles}"
         
-        elif cmd == "STEP":
-            cycles = self.emu.cpu.step()
-            return f"OK CYCLES={cycles}"
-        
-        elif cmd == "STEPS":
-            count = int(parts[1]) if len(parts) > 1 else 1
-            total_cycles = 0
-            for _ in range(count):
-                total_cycles += self.emu.cpu.step()
-            return f"OK CYCLES={total_cycles}"
-        
-        elif cmd == "RUN":
-            max_cycles = int(parts[1]) if len(parts) > 1 else None
-            cycles = 0
-            while max_cycles is None or cycles < max_cycles:
-                cycles += self.emu.cpu.step()
-            return f"OK CYCLES={cycles}"
+        elif cmd == "SYS":
+            if len(parts) < 2:
+                return "ERROR: Missing address"
+            try:
+                addr = int(parts[1].replace('$', '').replace('0x', ''), 16)
+                if addr < 0 or addr > 0xFFFF:
+                    return "ERROR: Address out of range ($0000-$FFFF)"
+                self.emu.cpu.state.pc = addr & 0xFFFF
+                return f"OK PC=${addr:04X}"
+            except ValueError as e:
+                return f"ERROR: Invalid address format: {parts[1]}"
         
         elif cmd == "MEMORY":
             if len(parts) < 2:

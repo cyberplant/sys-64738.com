@@ -141,6 +141,20 @@ class TextualInterface(App):
                         self.emulator.running = False
                     break
 
+                # Load program if pending (after BASIC boot completes)
+                if self.emulator.prg_file_path and not hasattr(self.emulator, '_program_loaded_after_boot'):
+                    # BASIC is ready - load the program now (after boot has completed)
+                    # Wait until we're past boot sequence (cycles > 2020000)
+                    if cycles > 2020000:
+                        try:
+                            self.emulator.load_prg(self.emulator.prg_file_path)
+                            self.emulator.prg_file_path = None  # Clear path after loading
+                            self.emulator._program_loaded_after_boot = True
+                            self.add_debug_log("💾 Program loaded after BASIC boot completed")
+                        except Exception as e:
+                            self.add_debug_log(f"❌ Failed to load program: {e}")
+                            self.emulator.prg_file_path = None  # Clear path even on error
+
                 step_cycles = self.emulator.cpu.step(self.emulator.udp_debug, cycles)
                 cycles += step_cycles
                 self.emulator.current_cycles = cycles
@@ -390,9 +404,12 @@ class TextualInterface(App):
             if SCREEN_MEM <= cursor_addr < SCREEN_MEM + 1000:
                 self.emulator.memory.write(cursor_addr, petscii_code)
                 cursor_addr += 1
-                # Simple wrapping
+                # Handle wrapping/scrolling when reaching end of screen
                 if cursor_addr >= SCREEN_MEM + 1000:
-                    cursor_addr = SCREEN_MEM
+                    # At end of screen - scroll up and move to next line
+                    self.emulator.memory._scroll_screen_up()
+                    # Cursor moves to start of bottom row (row 24, column 0)
+                    cursor_addr = SCREEN_MEM + 24 * 40
         
         # Update cursor position
         self.emulator.memory.write(0xD1, cursor_addr & 0xFF)

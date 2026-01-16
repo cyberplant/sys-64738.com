@@ -133,7 +133,8 @@ class CPU6502:
                 # However, for emulation, we need to handle RUN injection
                 
                 # Inject "RUN" command if program was loaded (only once)
-                if self.interface and hasattr(self.interface, 'emulator') and self.interface.emulator.program_loaded:
+                emu = self.interface.emulator if self.interface and hasattr(self.interface, 'emulator') else None
+                if emu and emu.program_loaded:
                     if not hasattr(self, '_run_injected'):
                         self._run_injected = True
                         run_command = b"RUN\x0D"  # RUN + carriage return
@@ -278,9 +279,12 @@ class CPU6502:
                     # Just write the character as-is (PETSCII)
                     self.memory.write(cursor_addr, char)
                     cursor_addr += 1
-                    # Simple wrapping
+                    # Handle wrapping/scrolling when reaching end of screen
                     if cursor_addr >= SCREEN_MEM + 1000:
-                        cursor_addr = SCREEN_MEM
+                        # At end of screen - scroll up and move to next line
+                        self.memory._scroll_screen_up()
+                        # Cursor moves to start of bottom row (row 24, column 0)
+                        cursor_addr = SCREEN_MEM + 24 * 40
             
             # Update cursor position
             self.memory.write(0xD1, cursor_addr & 0xFF)
@@ -584,6 +588,18 @@ class CPU6502:
             return self._sbc_imm()
         elif opcode == 0xE5:  # SBC zp
             return self._sbc_zp()
+        elif opcode == 0xF5:  # SBC zpx
+            zp_addr = (self.memory.read(self.state.pc + 1) + self.state.x) & 0xFF
+            value = self.memory.read(zp_addr)
+            carry = 1 if self._get_flag(0x01) else 0
+            result = self.state.a - value - (1 - carry)
+            self._set_flag(0x01, result >= 0)
+            # Set overflow flag
+            self._set_flag(0x40, ((self.state.a ^ value) & 0x80) != 0 and ((self.state.a ^ result) & 0x80) != 0)
+            self.state.a = result & 0xFF
+            self._update_flags(self.state.a)
+            self.state.pc = (self.state.pc + 2) & 0xFFFF
+            return 4
         elif opcode == 0xE1:  # SBC indx
             zp_addr = (self.memory.read(self.state.pc + 1) + self.state.x) & 0xFF
             addr_low = self.memory.read(zp_addr)
@@ -662,6 +678,18 @@ class CPU6502:
             self._set_flag(0x01, self.state.a >= value)
             self._update_flags(result)
             self.state.pc = (self.state.pc + 3) & 0xFFFF
+            return 4
+        elif opcode == 0xD9:  # CMP absy
+            base = self._read_word(self.state.pc + 1)
+            addr = (base + self.state.y) & 0xFFFF
+            value = self.memory.read(addr)
+            result = (self.state.a - value) & 0xFF
+            self._set_flag(0x01, self.state.a >= value)
+            self._update_flags(result)
+            self.state.pc = (self.state.pc + 3) & 0xFFFF
+            # Add 1 cycle if page boundary crossed
+            if (base & 0xFF00) != (addr & 0xFF00):
+                return 5
             return 4
         elif opcode == 0xE0:  # CPX imm
             return self._cpx_imm()

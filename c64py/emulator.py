@@ -38,6 +38,7 @@ class C64:
         self.screen_lock = threading.Lock()
         self.current_cycles = 0  # Track current cycle count
         self.program_loaded = False  # Track if a program was loaded via command line
+        self.prg_file_path = None  # Store PRG file path to load after BASIC is ready
 
         # Backward compatibility
         self.rich_interface = self.interface
@@ -241,8 +242,10 @@ class C64:
         
         # Initialize BASIC input buffer (for CHRIN keyboard input)
         # $0200-$0258: BASIC input buffer (89 bytes)
-        # $029B: Current input buffer index (0 = empty)
-        self.memory.ram[0x029B] = 0  # Input buffer pointer (0 = empty, reads backwards from end)
+        # $029B: Input buffer read pointer (0 = empty, >0 = chars available)
+        # $029C: Line editing length counter (temporary, during line editing)
+        self.memory.ram[0x029B] = 0  # Input buffer pointer (0 = empty)
+        self.memory.ram[0x029C] = 0  # Line editing length (0 = no line being edited)
         # Clear BASIC input buffer
         for i in range(89):
             self.memory.ram[0x0200 + i] = 0
@@ -437,6 +440,21 @@ class C64:
         while self.running:
             pc = self.cpu.state.pc
 
+            # Load program if pending (after BASIC boot completes)
+            if self.prg_file_path and not hasattr(self, '_program_loaded_after_boot'):
+                # BASIC is ready - load the program now (after boot has completed)
+                # Wait until we're past boot sequence (cycles > 2020000)
+                if cycles > 2020000:
+                    try:
+                        self.load_prg(self.prg_file_path)
+                        self.prg_file_path = None  # Clear path after loading
+                        self._program_loaded_after_boot = True
+                        if self.interface:
+                            self.interface.add_debug_log("💾 Program loaded after BASIC boot completed")
+                    except Exception as e:
+                        if self.interface:
+                            self.interface.add_debug_log(f"❌ Failed to load program: {e}")
+                        self.prg_file_path = None  # Clear path even on error
 
             step_cycles = self.cpu.step(self.udp_debug, cycles)
             cycles += step_cycles
